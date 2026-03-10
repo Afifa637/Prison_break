@@ -1,0 +1,60 @@
+[gd_scene load_steps=9 format=3 uid="uid://bp8t2sww57u6"]
+
+[ext_resource type="PackedScene" uid="uid://b723vj88usbud" path="res://scenes/player_blue.tscn" id="1_yqjtg"]
+[ext_resource type="Texture2D" uid="uid://dv574r4bunilv" path="res://assets/sprites/Tiles_2.png" id="2_yqjtg"]
+[ext_resource type="PackedScene" uid="uid://mb2r3snm85fq" path="res://scenes/fire.tscn" id="3_lnu2h"]
+[ext_resource type="PackedScene" uid="uid://d4ja5r70vgx3g" path="res://scenes/player_red.tscn" id="4_lbhrr"]
+[ext_resource type="PackedScene" uid="uid://bostxe16kofyh" path="res://scenes/dog.tscn" id="4_p57ef"]
+[ext_resource type="PackedScene" uid="uid://bgmt0l2wwuc01" path="res://scenes/police.tscn" id="5_iywne"]
+
+[sub_resource type="TileSetAtlasSource" id="TileSetAtlasSource_lnu2h"]
+texture = ExtResource("2_yqjtg")
+margins = Vector2i(165, 420)
+texture_region_size = Vector2i(1020, 1000)
+47:87/0 = 0
+3:0/0 = 0
+
+[sub_resource type="TileSet" id="TileSet_lbhrr"]
+sources/0 = SubResource("TileSetAtlasSource_lnu2h")
+
+[node name="Game" type="Node2D"]
+
+[node name="Police" parent="." instance=ExtResource("5_iywne")]
+position = Vector2(2486, 169)
+
+[node name="Player_blue" parent="." instance=ExtResource("1_yqjtg")]
+position = Vector2(53, 63)
+slide_on_ceiling = false
+
+[node name="Player_red" parent="." instance=ExtResource("4_lbhrr")]
+position = Vector2(-935, -190)
+
+[node name="Dog" parent="." instance=ExtResource("4_p57ef")]
+position = Vector2(-2179, 321)
+
+[node name="Camera2D" type="Camera2D" parent="."]
+zoom = Vector2(0.1, 0.1)
+
+[node name="TileMap" type="TileMap" parent="."]
+tile_set = SubResource("TileSet_lbhrr")
+rendering_quadrant_size = 128
+format = 2
+layer_0/name = "bg"
+layer_1/name = "Mid"
+layer_1/z_index = -1
+layer_1/tile_data = PackedInt32Array(655314, 196608, 0, 589836, 196608, 0, 589895, 196608, 0, 589954, 196608, 0, 590012, 196608, 0, 4456636, 196608, 0, 4456578, 196608, 0, 4456519, 196608, 0, 4456402, 196608, 0, 4390925, 196608, 0, -3145774, 196608, 0, -3211252, 196608, 0, -3211194, 196608, 0, -3211135, 196608, 0, -3211076, 196608, 0, -3145833, 196608, 0, 655255, 196608, 0, 4456343, 196608, 0, -3145891, 196608, 0, 655197, 196608, 0, 4456285, 196608, 0, -7012164, 196608, 0, -7077759, 196608, 0, -7012282, 196608, 0, -7012340, 196608, 0, -6946862, 196608, 0, -6946921, 196608, 0, -6946979, 196608, 0, 655138, 196608, 0, 4456227, 196608, 0, -3145950, 196608, 0, -6947037, 196608, 0, -7012105, 196608, 0, -3211017, 196608, 0, 590071, 196608, 0, 4456695, 196608, 0, 4521762, 196608, 0, 8257314, 196608, 0, 8257373, 196608, 0, 8257431, 196608, 0, 8257490, 196608, 0, 8192013, 196608, 0, 8192072, 196608, 0, 8192131, 196608, 0, 8192189, 196608, 0, 8192248, 196608, 0, -7012046, 196608, 0, -3210958, 196608, 0, 590130, 196608, 0, 4391218, 196608, 0, 8192306, 196608, 0, 11993394, 196608, 0, 11993334, 196608, 0, 11993276, 196608, 0, 11993218, 196608, 0, 11993160, 196608, 0, 11993102, 196608, 0, 12058579, 196608, 0, 12058520, 196608, 0, 12058461, 196608, 0, 12058402, 196608, 0, 12058344, 196608, 0, 8191720, 196608, 0, 4390632, 196608, 0, 589544, 196608, 0, -3211544, 196608, 0, -7012632, 196608, 0, -10879256, 196608, 0, -10879198, 196608, 0, -10813603, 196608, 0, -10813544, 196608, 0, -10813486, 196608, 0, -10878964, 196608, 0, -10878906, 196608, 0, -10878848, 196608, 0, -10878790, 196608, 0, -10878730, 196608, 0, -10878670, 196608, 0)
+
+[node name="fire" parent="." instance=ExtResource("3_lnu2h")]
+position = Vector2(1395, 46)
+
+[node name="fire2" parent="." instance=ExtResource("3_lnu2h")]
+position = Vector2(-1437, 986)
+
+[node name="fire3" parent="." instance=ExtResource("3_lnu2h")]
+position = Vector2(-1903, -894)
+
+[node name="fire4" parent="." instance=ExtResource("3_lnu2h")]
+position = Vector2(2332, 1434)
+
+[node name="Dog2" parent="." instance=ExtResource("4_p57ef")]
+position = Vector2(4100, 1658)

@@ -1,9 +1,9 @@
 class_name Dog
 extends CharacterBody2D
 
-@export var move_speed: float = 500.0
+@export var move_speed: float = 10.0
 @export var idle_time: float = 5.0
-@export var walk_time: float = 1.0
+@export var walk_time: float = 0.5
 
 @onready var anim = $AnimatedSprite2D
 

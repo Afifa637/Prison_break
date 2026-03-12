@@ -113,8 +113,8 @@ animations = [{
 }]
 
 [sub_resource type="CapsuleShape2D" id="CapsuleShape2D_dtl5i"]
-radius = 97.0
-height = 336.0
+radius = 33.0
+height = 66.0
 
 [node name="Dog" type="CharacterBody2D"]
 position = Vector2(-4, -32)
@@ -123,14 +123,14 @@ move_speed = 1400.0
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 z_as_relative = false
-position = Vector2(21, -185.99998)
-scale = Vector2(0.7135259, 0.75)
+position = Vector2(-0.9999962, -14)
+scale = Vector2(0.20504813, 0.1835692)
 sprite_frames = SubResource("SpriteFrames_dr6hy")
 animation = &"idle"
 frame_progress = 0.4976774
 flip_h = true
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-position = Vector2(32, -145)
+position = Vector2(-4, -7)
 shape = SubResource("CapsuleShape2D_dtl5i")
 debug_color = Color(0.28043786, 0.60029966, 0.5541241, 0.41960785)

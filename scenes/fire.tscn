@@ -103,19 +103,19 @@ animations = [{
 }]
 
 [sub_resource type="CapsuleShape2D" id="CapsuleShape2D_qb48u"]
-radius = 108.0
-height = 216.0
+radius = 34.0
+height = 86.0
 
 [node name="fire" type="CharacterBody2D"]
 script = ExtResource("1_xqmqg")
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
-position = Vector2(20.999992, -198.00002)
-scale = Vector2(0.63125837, 0.46147677)
+position = Vector2(3.9999695, -70)
+scale = Vector2(0.19813922, 0.13523275)
 sprite_frames = SubResource("SpriteFrames_3ig1c")
 animation = &"fire"
 frame_progress = 0.9721824
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-position = Vector2(4, -61)
+position = Vector2(0, -39)
 shape = SubResource("CapsuleShape2D_qb48u")

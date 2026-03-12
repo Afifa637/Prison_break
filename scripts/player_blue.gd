@@ -1,6 +1,6 @@
 class_name Player_blue extends CharacterBody2D
 
-@export var move_speed: float = 1400.0
+@export var move_speed: float = 400.0
 @export var jump_force: float = 1200.0
 @export var gravity: float = 2600.0
 

@@ -106,8 +106,8 @@ animations = [{
 }]
 
 [sub_resource type="CapsuleShape2D" id="CapsuleShape2D_dtl5i"]
-radius = 97.0
-height = 336.0
+radius = 34.0
+height = 90.0
 
 [node name="Player_blue" type="CharacterBody2D"]
 position = Vector2(-4, -32)
@@ -115,14 +115,14 @@ script = ExtResource("1_dtl5i")
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 z_as_relative = false
-position = Vector2(21, -185.99998)
-scale = Vector2(0.7135259, 0.75)
+position = Vector2(10.999998, -39)
+scale = Vector2(0.23282443, 0.23946454)
 sprite_frames = SubResource("SpriteFrames_dr6hy")
 animation = &"jump"
 frame_progress = 0.18452024
 flip_h = true
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-position = Vector2(32, -145)
+position = Vector2(7, -26)
 shape = SubResource("CapsuleShape2D_dtl5i")
 debug_color = Color(0.28043786, 0.60029966, 0.5541241, 0.41960785)

@@ -190,8 +190,8 @@ animations = [{
 }]
 
 [sub_resource type="CapsuleShape2D" id="CapsuleShape2D_dtl5i"]
-radius = 128.0
-height = 388.0
+radius = 46.0
+height = 122.0
 
 [node name="Police" type="CharacterBody2D"]
 position = Vector2(-4, -32)
@@ -199,14 +199,14 @@ script = ExtResource("1_dtl5i")
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 z_as_relative = false
-position = Vector2(-0.028393269, -286.22168)
-scale = Vector2(1.3501825, 1.4635003)
+position = Vector2(5, -66)
+scale = Vector2(0.40481445, 0.40344733)
 sprite_frames = SubResource("SpriteFrames_dr6hy")
 animation = &"idle"
 frame_progress = 0.38129425
 flip_h = true
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]
-position = Vector2(0, -217)
+position = Vector2(5, -35)
 shape = SubResource("CapsuleShape2D_dtl5i")
 debug_color = Color(0.28043786, 0.60029966, 0.5541241, 0.41960785)

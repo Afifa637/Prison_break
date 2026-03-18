@@ -1,6 +1,6 @@
 [gd_scene load_steps=29 format=3 uid="uid://bgmt0l2wwuc01"]
 
-[ext_resource type="Script" uid="uid://ckooh456yhcs4" path="res://scripts/player_blue.gd" id="1_dtl5i"]
+[ext_resource type="Script" path="res://scripts/police.gd" id="1_dtl5i"]
 [ext_resource type="Texture2D" uid="uid://iq806h52xhgr" path="res://assets/sprites/Police.png" id="2_71yvf"]
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_lh3yj"]

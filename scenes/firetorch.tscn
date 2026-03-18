@@ -92,7 +92,7 @@ animations = [{
 radius = 34.0
 height = 86.0
 
-[node name="fire" type="CharacterBody2D"]
+[node name="fire" type="CharacterBody2D" groups=["fires"]]
 script = ExtResource("1_cfuvn")
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]

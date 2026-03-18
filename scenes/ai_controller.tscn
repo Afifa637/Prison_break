@@ -1,0 +1,7 @@
+[gd_scene format=3 uid="uid://ctbt0i7moutra"]
+
+[ext_resource type="Script" uid="uid://bsxuhhk1cpd2" path="res://ai_controller.gd" id="1_0blnn"]
+
+[node name="AIController" type="Node2D" unique_id=1095678293]
+script = ExtResource("1_0blnn")
+player = NodePath(".")

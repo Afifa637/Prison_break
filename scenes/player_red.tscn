@@ -1,6 +1,6 @@
-[gd_scene load_steps=17 format=3 uid="uid://d4ja5r70vgx3g"]
+[gd_scene format=3 uid="uid://d4ja5r70vgx3g"]
 
-[ext_resource type="Script" uid="uid://ckooh456yhcs4" path="res://scripts/player_blue.gd" id="1_dtl5i"]
+[ext_resource type="Script" uid="uid://brn8dctom8bfn" path="res://scripts/player_red.gd" id="1_dtl5i"]
 [ext_resource type="Texture2D" uid="uid://1fmm804a7fb3" path="res://assets/sprites/Prisoner_Red.png" id="2_0ej1a"]
 
 [sub_resource type="AtlasTexture" id="AtlasTexture_flnug"]
@@ -109,11 +109,11 @@ animations = [{
 radius = 34.0
 height = 90.0
 
-[node name="Player_blue" type="CharacterBody2D"]
+[node name="Player_blue" type="CharacterBody2D" groups=["players"] unique_id=1747681]
 position = Vector2(-4, -32)
 script = ExtResource("1_dtl5i")
 
-[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
+[node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="." unique_id=251670462]
 z_as_relative = false
 position = Vector2(10.999998, -39)
 scale = Vector2(0.23282443, 0.23946454)
@@ -122,7 +122,7 @@ animation = &"jump"
 frame_progress = 0.18452024
 flip_h = true
 
-[node name="CollisionShape2D" type="CollisionShape2D" parent="."]
+[node name="CollisionShape2D" type="CollisionShape2D" parent="." unique_id=583173794]
 position = Vector2(7, -26)
 shape = SubResource("CapsuleShape2D_dtl5i")
 debug_color = Color(0.28043786, 0.60029966, 0.5541241, 0.41960785)

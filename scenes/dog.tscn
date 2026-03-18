@@ -116,18 +116,16 @@ animations = [{
 radius = 33.0
 height = 66.0
 
-[node name="Dog" type="CharacterBody2D"]
+[node name="Dog" type="CharacterBody2D" groups=["dogs"]]
 position = Vector2(-4, -32)
 script = ExtResource("1_vwjdu")
-move_speed = 1400.0
 
 [node name="AnimatedSprite2D" type="AnimatedSprite2D" parent="."]
 z_as_relative = false
 position = Vector2(-0.9999962, -14)
 scale = Vector2(0.20504813, 0.1835692)
 sprite_frames = SubResource("SpriteFrames_dr6hy")
-animation = &"idle"
-frame_progress = 0.4976774
+animation = &"run"
 flip_h = true
 
 [node name="CollisionShape2D" type="CollisionShape2D" parent="."]

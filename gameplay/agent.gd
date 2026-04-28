@@ -16,6 +16,9 @@ var capture_count: int = 0
 var escape_rank: int = -1
 var elimination_tick: int = -1
 var camera_detections: int = 0
+## MINOR #2 FIX: camera_detections is now per-life (reset on respawn).
+## total_camera_detections accumulates across all lives for the results screen.
+var total_camera_detections: int = 0
 var cctv_alert_target: Vector2i = Vector2i(-1, -1)
 var cctv_alert_ticks: int = 0
 var metrics: Dictionary = {
@@ -23,7 +26,8 @@ var metrics: Dictionary = {
 	"waits": 0,
 	"abilities": 0,
 	"sprints": 0,
-	"captures_inflicted": 0,
+	# FIX #5: captures_inflicted removed — agent.capture_count is the single
+	# source of truth, always incremented synchronously in simulation_loop.
 	"raw_score": 0.0,
 	"performance": 50.0,
 	"best_progress_cells": 0,
@@ -64,6 +68,7 @@ var _needs_replan: bool = false
 
 func _ready() -> void:
 	z_index = 2   # renders above dog (z=1) and grid
+	add_to_group("agents")  # FIX #6: allows respawn BFS to find police positions
 	# Transient visual effects spawned in response to simulation events
 	EventBus.agent_status_changed.connect(_on_status_changed_fx)
 	EventBus.agent_captured.connect(_on_captured_fx)
@@ -108,13 +113,22 @@ func set_grid_visual_pos() -> void:
 	queue_redraw()
 
 func respawn() -> void:
-	grid_pos = initial_pos
+	# FIX #6: Pick a safe respawn tile that is farthest from the nearest police
+	# so the police cannot camp initial_pos and chain-capture.
+	grid_pos = _pick_safe_respawn_pos()
+	initial_pos = grid_pos  # update so future respawns also use a rotated safe point
 	var max_hp: float = stats.max_health if stats != null else 100.0
 	health = maxf(1.0, max_hp - 25.0)
 	stamina = stats.max_stamina if stats != null else 100.0
 	stealth_level = 50.0
-	capture_cooldown_ticks = 10   # ~2.5 s at 4 Hz — immunity after respawn
+	# FIX #6: 20 ticks (~5 s at 4 Hz) instead of 10 (~2.5 s).
+	# Police base_speed=2 can reach 5 tiles in ~1.25 s, so 10 ticks was
+	# frequently not enough to clear the spawn zone before immunity expired.
+	capture_cooldown_ticks = 20
 	_status_effects.clear()
+	# MINOR #2 FIX: Reset per-life camera_detections; accumulate into total.
+	total_camera_detections += camera_detections
+	camera_detections = 0
 	cctv_alert_target = Vector2i(-1, -1)
 	cctv_alert_ticks = 0
 	movement_speed_multiplier = 1.0
@@ -124,7 +138,64 @@ func respawn() -> void:
 		_ai_controller.clear_history()
 	set_grid_visual_pos()
 	EventBus.emit_signal("agent_respawned", agent_id)
-	print("  [%s] RESPAWNED at %s (total captures: %d)" % [_role, initial_pos, capture_count])
+	print("  [%s] RESPAWNED at %s (total captures: %d)" % [_role, grid_pos, capture_count])
+
+# FIX #6: Find the walkable tile reachable from initial_pos that is farthest
+# from any active police agent.  Falls back to initial_pos if no grid is available.
+func _pick_safe_respawn_pos() -> Vector2i:
+	# We don't store a reference to the grid or agents directly on Agent, so we
+	# read police positions from the scene tree via the EventBus agent list.
+	# Use a BFS from initial_pos to enumerate nearby walkable tiles, then pick
+	# the one with maximum minimum-distance to any police position.
+	var police_tiles: Array[Vector2i] = []
+	for node in get_tree().get_nodes_in_group("agents"):
+		var a: Agent = node as Agent
+		if a != null and a._role == "police" and a.is_active:
+			police_tiles.append(a.grid_pos)
+
+	# If no police found or no grid, return original spawn point.
+	var grid_node: Node = get_node_or_null("/root/Game/GridEngine")
+	if grid_node == null:
+		grid_node = get_node_or_null("/root/Main/Game/GridEngine")
+	if grid_node == null or police_tiles.is_empty():
+		return initial_pos
+
+	# BFS to collect candidate tiles within radius 6 of initial_pos.
+	var visited: Dictionary = {}
+	var queue: Array[Vector2i] = [initial_pos]
+	visited[initial_pos] = true
+	var candidates: Array[Vector2i] = []
+	var max_radius: int = 6
+
+	while not queue.is_empty():
+		var cur: Vector2i = queue.pop_front()
+		candidates.append(cur)
+		for nb in grid_node.get_neighbours(cur):
+			if visited.has(nb):
+				continue
+			if not grid_node.is_walkable(nb):
+				continue
+			if abs(nb.x - initial_pos.x) + abs(nb.y - initial_pos.y) > max_radius:
+				continue
+			visited[nb] = true
+			queue.append(nb)
+
+	if candidates.is_empty():
+		return initial_pos
+
+	# Pick candidate farthest from nearest police.
+	var best_tile: Vector2i = initial_pos
+	var best_dist: int = -1
+	for c in candidates:
+		var min_pd: int = 999999
+		for pt in police_tiles:
+			var d: int = abs(c.x - pt.x) + abs(c.y - pt.y)
+			if d < min_pd:
+				min_pd = d
+		if min_pd > best_dist:
+			best_dist = min_pd
+			best_tile = c
+	return best_tile
 
 func move_to(pos: Vector2i) -> void:
 	var old_pos: Vector2i = grid_pos
@@ -497,6 +568,8 @@ func _on_camera_detection(camera_id: int, id: int, visible: bool, _tile: Vector2
 	if id != agent_id or not visible:
 		return
 	camera_detections += 1
+	# total_camera_detections is the lifetime accumulator (not reset on respawn)
+	total_camera_detections += 1
 	print("  [%s] spotted by CCTV #%d" % [_role, camera_id])
 
 func _on_status_changed_fx(_id: int, _effect: String, _added: bool) -> void:

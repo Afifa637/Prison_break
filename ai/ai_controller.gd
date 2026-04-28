@@ -85,27 +85,9 @@ func record_position(pos: Vector2i) -> void:
 func clear_history() -> void:
 	_position_history.clear()
 
-func _is_oscillating_old(next_pos: Vector2i) -> bool:
-	# Detect actual ping-pong patterns (A→B→A→B) rather than simple recurrence
-	# which triggers false positives for legitimate backtracking through corridors
-	var h := _position_history
-	var n := h.size()
-	if n < 2:
-		return false
-	# Pattern: current→next matches two steps ago→one step ago (A→B→A→B)
-	if n >= 2 and h[n - 2] == next_pos and h[n - 1] == h[n - 2]:
-		return true
-	# Pattern: A→B→A — next_pos is where we were 2 steps ago, and we just moved away
-	if n >= 3 and h[n - 3] == next_pos and h[n - 1] == next_pos:
-		return true
-	# Pattern: extended oscillation — same two positions alternating for 4+ steps
-	if n >= 4:
-		var a: Vector2i = h[n - 1]
-		var b: Vector2i = h[n - 2]
-		if a != b and h[n - 3] == a and h[n - 4] == b and next_pos == b:
-			return true
-	return false
-
+# MINOR #1 FIX: _is_oscillating_old() deleted — it was dead code superseded by
+# is_oscillating() below. Having two oscillation detectors with different semantics
+# risked accidental misuse in future edits.
 func is_oscillating(next_pos: Vector2i) -> bool:
 	var h := _position_history
 	var n := h.size()

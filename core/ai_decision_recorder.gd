@@ -63,6 +63,7 @@ func _on_minimax_decision(id: int, candidates: Array, chosen: Dictionary) -> voi
 		best_score = maxf(best_score, score)
 		worst_score = minf(worst_score, score)
 		var is_chosen: bool = tile == chosen_tile
+		var police_resp: Array = Array(c.get("police_responses", []))
 		candidate_nodes.append({
 			"action": _infer_action(agent.grid_pos, tile),
 			"tile": tile,
@@ -70,6 +71,7 @@ func _on_minimax_decision(id: int, candidates: Array, chosen: Dictionary) -> voi
 			"risk": _risk_label(_estimate_risk(agent, tile)),
 			"chosen": is_chosen,
 			"children": [],
+			"police_responses": police_resp,
 		})
 
 	var entry: Dictionary = _make_common_entry(agent, "Minimax", chosen_tile)
@@ -87,7 +89,10 @@ func _on_minimax_decision(id: int, candidates: Array, chosen: Dictionary) -> voi
 	if minimax_reason == "":
 		minimax_reason = _minimax_reason_fallback(agent, chosen_tile, float(chosen.get("score", 0.0)))
 	entry["reason"] = minimax_reason
-	entry["pruned_note"] = "Pruned branches hidden for readability"
+	entry["pruned_branches"] = int(chosen.get("pruned_branches", 0))
+	entry["evaluated_nodes"] = int(chosen.get("evaluated_nodes", candidate_nodes.size()))
+	entry["search_depth"] = int(chosen.get("search_depth", 4))
+	entry["pruned_note"] = "α-β pruned %d branches (evaluated %d)" % [int(chosen.get("pruned_branches", 0)), int(chosen.get("evaluated_nodes", candidate_nodes.size()))]
 	_append_entry(id, entry)
 
 func _on_mcts_decision(id: int, root_visits: int, candidates: Array, chosen: Dictionary) -> void:
@@ -106,14 +111,41 @@ func _on_mcts_decision(id: int, root_visits: int, candidates: Array, chosen: Dic
 		var danger_score: float = _estimate_risk(agent, tile)
 		best_reward = maxf(best_reward, avg_score)
 		best_visits = maxi(best_visits, visits)
+		# Store UCT breakdown so results screen can show exploit vs explore bars
+		var uct_total: float = float(c.get("uct", 0.0))
+		var uct_exploit: float = avg_score
+		var uct_explore: float = maxf(uct_total - uct_exploit, 0.0)
+		# Infer rollout outcome and a human-readable summary from the avg_score.
+		# avg_score near 1.0 = escaped quickly; near 0.0 = caught; middle = timed out.
+		# dist_exit is used to estimate how far from exit this branch ends.
+		var dist_exit_tiles: int = int(c.get("dist_exit", -1))
+		if dist_exit_tiles < 0:
+			dist_exit_tiles = _estimate_exit_dist(tile)
+		var rollout_outcome: String
+		var rollout_summary: String
+		if avg_score >= 0.85:
+			rollout_outcome = "escaped"
+			var steps_est: int = maxi(1, int((1.0 - avg_score) / 0.015 + 1.5))
+			rollout_summary = "Escaped in ~%d steps (exit ~%d tiles)" % [steps_est, dist_exit_tiles]
+		elif avg_score <= 0.12:
+			rollout_outcome = "caught"
+			rollout_summary = "Caught before reaching exit (%d tiles away)" % dist_exit_tiles
+		else:
+			rollout_outcome = "timed_out"
+			rollout_summary = "Timed out, ~%d tiles from exit (reward %.2f)" % [dist_exit_tiles, avg_score]
 		candidate_nodes.append({
 			"action": _infer_action(agent.grid_pos, tile),
 			"tile": tile,
 			"visits": visits,
 			"avg_reward": avg_score,
-			"ucb": float(c.get("uct", 0.0)),
+			"ucb": uct_total,
+			"uct_exploit": uct_exploit,
+			"uct_explore": uct_explore,
+			"uct_total": uct_total,
 			"danger": _risk_label(danger_score),
 			"chosen": tile == chosen_tile,
+			"rollout_summary": rollout_summary,
+			"rollout_outcome": rollout_outcome,
 		})
 
 	var entry: Dictionary = _make_common_entry(agent, "MCTS", chosen_tile)
@@ -198,10 +230,17 @@ func _on_fuzzy_decision(id: int, inputs: Dictionary, rule_activations: Array, ou
 		},
 		"winner": target_name,
 	}
-	entry["inputs"] = fuzzy_inputs
+	# MAJOR #2 FIX: Merge the rich fuzzy scores from fuzzy_controller.gd (passed via
+	# inputs) into the stored entry so results_screen can draw the real police decision
+	# tree. Keys like chase_score, intercept_score, investigate_score, patrol_score,
+	# red_target_score, blue_target_score are now available for tree rendering.
+	var merged_inputs: Dictionary = fuzzy_inputs.duplicate()
+	for key in inputs.keys():
+		merged_inputs[key] = inputs[key]
+	entry["inputs"] = merged_inputs
 	entry["scores"] = {
-		"red_target_score": snappedf(red_target_score, 0.01),
-		"blue_target_score": snappedf(blue_target_score, 0.01),
+		"red_target_score": snappedf(float(inputs.get("red_target_score", red_target_score)), 0.01),
+		"blue_target_score": snappedf(float(inputs.get("blue_target_score", blue_target_score)), 0.01),
 	}
 	entry["rules"] = rules
 	entry["rule_count"] = rules.size()
@@ -360,6 +399,15 @@ func _infer_action(from_tile: Vector2i, to_tile: Vector2i) -> String:
 	if d.y < 0:
 		return "MOVE_UP"
 	return "MOVE"
+
+func _estimate_exit_dist(tile: Vector2i) -> int:
+	# Manhattan distance to the active exit via _exit_rotator.
+	if _exit_rotator == null:
+		return 99
+	var ae: Vector2i = _exit_rotator.get_active_exit()
+	if ae.x < 0:
+		return 99
+	return absi(tile.x - ae.x) + absi(tile.y - ae.y)
 
 func _estimate_risk(agent: Agent, tile: Vector2i) -> float:
 	var score: float = 0.0

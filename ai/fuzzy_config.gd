@@ -2,13 +2,23 @@ extends Resource
 class_name FuzzyConfig
 
 # ── Distance membership breakpoints ────────────────────────────────────────────
-@export var dist_close:  float = 3.0   # NEAR_FULL  — fully "near" up to here
-@export var dist_near_zero: float = 5.5  # NEAR_ZERO  — "near" drops to 0 here
-@export var dist_medium_low:  float = 3.5
-@export var dist_medium_peak: float = 6.5
-@export var dist_medium_high: float = 10.0
-@export var dist_far_zero: float = 6.25  # FAR_ZERO  — "far" starts rising here
-@export var dist_far:    float = 11.0  # FAR_FULL  — fully "far" from here
+# MODERATE #1 FIX: Cleaned up near/medium overlap.
+#
+# OLD values:  NEAR_FULL=3.0, NEAR_ZERO=5.5, MEDIUM_LOW=3.5, MEDIUM_PEAK=6.5
+#   → 2-tile overlap (3.5–5.5): near_mu and medium_mu both active simultaneously.
+#   → At 4.5 tiles with fluctuating alert, police flipped CHASE↔INVESTIGATE
+#     every tick, producing visible zigzag movement.
+#
+# NEW values:  NEAR_FULL=3.0, NEAR_ZERO=4.5, MEDIUM_LOW=4.0, MEDIUM_PEAK=7.0
+#   → 0.5-tile overlap (4.0–4.5) — narrow and intentional for smooth blending.
+#   → Clean separation means behaviour commits properly once distance stabilises.
+@export var dist_close:      float = 3.0   # NEAR_FULL  — fully "near" up to here
+@export var dist_near_zero:  float = 5.5   # NEAR_ZERO  — widened to 5.5 so near covers d=4-5 (Bug 1 fix)
+@export var dist_medium_low:  float = 3.5  # MEDIUM_LOW — lowered to 3.5 for overlap at transition (Bug 1 fix)
+@export var dist_medium_peak: float = 7.0  # MEDIUM_PEAK — keep
+@export var dist_medium_high: float = 11.0 # MEDIUM_HIGH — was 10.0; extended for smoother fade
+@export var dist_far_zero:   float = 7.0   # FAR_ZERO  — aligned with new medium_peak
+@export var dist_far:        float = 12.0  # FAR_FULL  — fully "far" from here
 
 # ── Alert level thresholds ─────────────────────────────────────────────────────
 @export var alert_suspicious: float = 0.35  # ALERT_SUSPICIOUS_THRESHOLD

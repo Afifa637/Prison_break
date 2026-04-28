@@ -118,19 +118,7 @@ func choose_action(agent: Node2D, grid: Node, cost_map: RefCounted, exit_rotator
 
 	return _make_move_action(chosen_move)
 
-func _execute_behaviour(behaviour: String, agent: Node2D, nearest_prisoner: Vector2i, active_exit: Vector2i, prisoners: Array[Vector2i]) -> Vector2i:
-	match behaviour:
-		"chase":
-			return _move_toward(agent, nearest_prisoner, null)
-		"intercept":
-			return _move_toward(agent, active_exit, null)
-		"investigate":
-			return _move_toward(agent, nearest_prisoner, null)
-		"patrol":
-			return _patrol_move(agent, active_exit, prisoners)
-		_:
-			return agent.grid_pos
-
+# behaviour → strategic tile dispatch (canonical path; _execute_behaviour deleted)
 func _move_toward(agent: Node2D, target: Vector2i, target_agent: Agent = null) -> Vector2i:
 	if target == Vector2i(-1, -1):
 		return agent.grid_pos
@@ -308,6 +296,14 @@ func _target_priority(police: Node2D, prisoner: Agent, active_exit: Vector2i) ->
 		capture_opportunity = 1.8
 
 	var exit_threat: float = clampf((10.0 - float(mini(dist_exit, 10))) / 10.0, 0.0, 1.0) * 3.0
+	# Exit rotation timing: if the prisoner can't reach this exit before it rotates,
+	# halve exit_threat — they're not actually close to escaping via THIS exit.
+	# This makes the police correctly de-prioritize prisoners sprinting toward a
+	# soon-to-vanish exit and focus on the one heading for the NEXT active exit.
+	if _exit_rotator != null:
+		var ticks_left: int = _exit_rotator.ticks_until_next_rotation()
+		if ticks_left > 0 and dist_exit > ticks_left:
+			exit_threat *= 0.5  # prisoner can't reach this exit in time
 	var low_stealth_bonus: float = (1.0 - stealth_norm) * 2.2
 	var police_distance_cost: float = float(dist_police) * 0.35
 	var target_switch_penalty: float = 0.0
@@ -390,9 +386,15 @@ func _choose_behaviour(police: Node2D, target: Agent, active_exit: Vector2i) -> 
 		_config.alert_chase_base_bias * alert_level
 
 	var investigate_score: float = medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + far_mu * suspicious_mu * 0.65
-	var intercept_score: float   = far_mu * maxf(alarmed_mu, 0.35) + (0.90 if target_exit_d <= 6 else 0.0)
+
+	# Bug 2 fix: add exit-proximity urgency so intercept beats patrol even at low alert
+	var target_exit_urgency: float = clampf((8.0 - float(target_exit_d)) / 8.0, 0.0, 1.0)
+	var intercept_score: float   = far_mu * maxf(alarmed_mu, 0.35 + target_exit_urgency * 0.80) + (0.90 if target_exit_d <= 6 else 0.0)
 	var patrol_score: float      = far_mu * maxf(0.0, 1.0 - alert_level) + 0.10
 
+	# Bug 1 fix: bridge bonus keeps CHASE dominant in the d=4-5 transition zone
+	if d > 3 and d <= 5:
+		chase_score += 0.45
 	if target_exit_d <= 4:
 		intercept_score += 0.55
 	if d <= 2:
@@ -583,10 +585,10 @@ func _emit_debug(agent: Node2D, behaviour: String, target_id: int, reason: Strin
 func _emit_decision_debug(agent: Node2D, behaviour: String, target_id: int, reason: String, final_move: Vector2i, changed: bool, threat_inputs: Dictionary = {}) -> void:
 	_emit_debug(agent, behaviour, target_id, reason, final_move, changed)
 	var inputs: Dictionary = {
-		"target_id": target_id,
-		"target_reason": reason,
+		"target_id":      target_id,
+		"target_reason":  reason,
 		"target_changed": changed,
-		"cctv_hint_age": _decision_tick - int(_cctv_hint.get("tick", -99999)),
+		"cctv_hint_age":  _decision_tick - int(_cctv_hint.get("tick", -99999)),
 		"cctv_hint_conf": float(_cctv_hint.get("confidence", 0.0)),
 		"cctv_hint_tile": _cctv_hint.get("tile", Vector2i(-1, -1)),
 	}
@@ -602,7 +604,111 @@ func _emit_decision_debug(agent: Node2D, behaviour: String, target_id: int, reas
 			inputs["selected_threat"] = float(inputs.get("red_threat", 0.0))
 		elif selected_role == "sneaky_blue":
 			inputs["selected_threat"] = float(inputs.get("blue_threat", 0.0))
-	var rules: Array = [{"rule": behaviour, "strength": 1.0}]
+
+	# FIX #4: Re-compute defuzzified scores from the last _choose_behaviour call
+	# and emit them so the HUD can display live fuzzy membership bars.
+	# We find the target agent to recompute the same values shown in _choose_behaviour.
+	var chase_score:     float = 0.0
+	var investigate_score: float = 0.0
+	var intercept_score: float = 0.0
+	var patrol_score:    float = 0.0
+	var alert_level:     float = clampf(float(agent.metrics.get("alert_level", 0.0)), 0.0, 1.0)
+	for p in _all_agents:
+		if p._role != "police" and p.agent_id == target_id:
+			var d: int              = manhattan(agent.grid_pos, p.grid_pos)
+			var target_exit_d: int  = manhattan(p.grid_pos, _exit_rotator.get_active_exit() if _exit_rotator != null else Vector2i(0,0))
+			var dist_v: float       = float(d)
+			var near_mu: float      = _trap_high(dist_v, _near_full(), _near_zero())
+			var medium_mu: float    = _trap_mid(dist_v, _medium_low(), _medium_peak(), _medium_high())
+			var far_mu: float       = _trap_low(dist_v, _far_zero(), _far_full())
+			var suspicious_mu: float = _trap_mid(alert_level, 0.20, _alert_suspicious(), 0.75)
+			var alarmed_mu: float    = _trap_low(alert_level, _alert_alarmed(), 0.90)
+			chase_score      = near_mu * _config.w_chase + medium_mu * alarmed_mu + alert_level * _config.alert_chase_weight + _config.alert_chase_base_bias * alert_level
+			investigate_score = medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + far_mu * suspicious_mu * 0.65
+			intercept_score   = far_mu * maxf(alarmed_mu, 0.35) + (0.90 if target_exit_d <= 6 else 0.0)
+			patrol_score      = far_mu * maxf(0.0, 1.0 - alert_level) + 0.10
+			if target_exit_d <= 4:
+				intercept_score += 0.55
+			if d <= 2:
+				chase_score += 0.75
+			var seen_tick: int = int(last_seen_tick_by_agent.get(target_id, -99999))
+			if _decision_tick - seen_tick <= 3:
+				investigate_score += 0.25
+			break
+
+	# Bug 3 fix: emit raw (unclamped) scores so HUD can normalize bars by max
+	var max_score: float = maxf(maxf(chase_score, intercept_score), maxf(investigate_score, patrol_score))
+	inputs["chase_score_raw"]       = chase_score
+	inputs["intercept_score_raw"]   = intercept_score
+	inputs["investigate_score_raw"] = investigate_score
+	inputs["patrol_score_raw"]      = patrol_score
+	inputs["max_behaviour_score"]   = max_score
+
+	# FIX #4: Emit fuzzy_debug so HUD panels can draw live defuzz bar charts.
+	# Bug 3 fix: bar values normalized relative to max_score so dominant behaviour
+	# is always visually distinguishable from a marginal win.
+	var bar_max: float = maxf(maxf(chase_score, intercept_score), maxf(investigate_score, patrol_score))
+	bar_max = maxf(bar_max, 0.001)
+	EventBus.emit_signal("fuzzy_debug", {
+		"chase":       chase_score / bar_max,
+		"investigate": investigate_score / bar_max,
+		"intercept":   intercept_score / bar_max,
+		"patrol":      patrol_score / bar_max,
+		"alert":       alert_level,
+		"behaviour":   behaviour,
+		"agent_id":    agent.agent_id,
+	})
+
+	# MAJOR #2 FIX: Emit full fuzzy scores so results_screen can draw a real
+	# police decision tree with all four behaviour scores and target scores.
+	# Previously only one fake rule {rule: behaviour, strength: 1.0} was emitted,
+	# giving the UI no data to build actual branches.
+	var target_agent_obj: Agent = null
+	for p in _all_agents:
+		if p._role != "police" and p.agent_id == target_id:
+			target_agent_obj = p
+			break
+	var red_score: float = 0.0
+	var blue_score: float = 0.0
+	for p in _all_agents:
+		if p._role == "rusher_red" and p.is_active:
+			red_score = snappedf(_target_priority(agent, p, _exit_rotator.get_active_exit() if _exit_rotator != null else Vector2i(0,0)), 0.01)
+		elif p._role == "sneaky_blue" and p.is_active:
+			blue_score = snappedf(_target_priority(agent, p, _exit_rotator.get_active_exit() if _exit_rotator != null else Vector2i(0,0)), 0.01)
+
+	inputs["alert_level"] = int(round(alert_level * 100.0))
+	inputs["red_target_score"] = red_score
+	inputs["blue_target_score"] = blue_score
+	inputs["chase_score"] = snappedf(chase_score, 0.01)
+	inputs["intercept_score"] = snappedf(intercept_score, 0.01)
+	inputs["investigate_score"] = snappedf(investigate_score, 0.01)
+	inputs["patrol_score"] = snappedf(patrol_score, 0.01)
+
+	if target_agent_obj != null:
+		var active_exit: Vector2i = _exit_rotator.get_active_exit() if _exit_rotator != null else Vector2i(0,0)
+		inputs["red_distance"] = manhattan(agent.grid_pos, target_agent_obj.grid_pos) if target_agent_obj._role == "rusher_red" else -1
+		inputs["blue_distance"] = manhattan(agent.grid_pos, target_agent_obj.grid_pos) if target_agent_obj._role == "sneaky_blue" else -1
+		inputs["red_exit_distance"] = manhattan(target_agent_obj.grid_pos, active_exit) if target_agent_obj._role == "rusher_red" else -1
+		inputs["blue_exit_distance"] = manhattan(target_agent_obj.grid_pos, active_exit) if target_agent_obj._role == "sneaky_blue" else -1
+		inputs["red_stealth"] = int(target_agent_obj.stealth_level) if target_agent_obj._role == "rusher_red" else 0
+		inputs["blue_stealth"] = int(target_agent_obj.stealth_level) if target_agent_obj._role == "sneaky_blue" else 0
+		for p in _all_agents:
+			if p._role != "police" and p.is_active and p.agent_id != target_agent_obj.agent_id:
+				if p._role == "rusher_red":
+					inputs["red_distance"] = manhattan(agent.grid_pos, p.grid_pos)
+					inputs["red_exit_distance"] = manhattan(p.grid_pos, active_exit)
+					inputs["red_stealth"] = int(p.stealth_level)
+				elif p._role == "sneaky_blue":
+					inputs["blue_distance"] = manhattan(agent.grid_pos, p.grid_pos)
+					inputs["blue_exit_distance"] = manhattan(p.grid_pos, active_exit)
+					inputs["blue_stealth"] = int(p.stealth_level)
+
+	var rules: Array = [
+		{"rule": "CHASE",       "label": "Chase",       "strength": chase_score       / maxf(max_score, 0.001)},
+		{"rule": "INTERCEPT",   "label": "Intercept",   "strength": intercept_score   / maxf(max_score, 0.001)},
+		{"rule": "INVESTIGATE", "label": "Investigate", "strength": investigate_score / maxf(max_score, 0.001)},
+		{"rule": "PATROL",      "label": "Patrol",      "strength": patrol_score      / maxf(max_score, 0.001)},
+	]
 	EventBus.emit_signal("fuzzy_decision", agent.agent_id, inputs, rules, behaviour, final_move)
 
 # ── Fuzzy membership functions ─────────────────────────────────────────────────

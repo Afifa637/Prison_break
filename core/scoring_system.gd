@@ -18,6 +18,9 @@ const CAMERA_HIT_PENALTY:          float = -10.0
 const WALL_HIT_PENALTY:            float = -4.0
 const FIRE_ELIMINATION_PENALTY:    float = -55.0
 const CAPTURE_PENALTY:             float = -75.0
+# MODERATE #2 FIX: Timeout is a lighter penalty than a real capture — the
+# prisoner was not actively caught, just ran out of time.
+const TIMEOUT_PENALTY:             float = -35.0
 
 # Attribute effects on capture
 const CAPTURE_HEALTH_LOSS:    float = 25.0
@@ -26,8 +29,11 @@ const DOG_ZONE_STEALTH_DRAIN_PER_SECOND: float = 9.0
 const CAMERA_STEALTH_DROP:    float = 8.0
 
 # ── POLICE SCORING ────────────────────────────────────────────────────────────
-# Police starts with a patrol bonus so it isn't punished purely for escapes
-const POLICE_START_BONUS:     float = 220.0
+# MODERATE #3 FIX: POLICE_START_BONUS removed — it inflated police performance
+# even when idle (54/100 with zero captures). Replaced with PATROL_COVERAGE_BONUS
+# (+0.5 per unique tile visited) so active, coverage-seeking police score well
+# while idle police score poorly.
+const PATROL_COVERAGE_BONUS:  float = 0.5
 
 const CAPTURE_BONUS:          float = 190.0
 const DOG_ASSIST_BONUS:       float = 24.0
@@ -71,8 +77,8 @@ func setup(agents: Array[Agent], exit_rotator: ExitRotator, dog_npc: DogNPC, cam
 	for agent in _agents:
 		_ensure_metrics(agent)
 		if agent._role == "police":
-			# Police starts with patrol advantage
-			agent.metrics["raw_score"] = POLICE_START_BONUS
+			# MODERATE #3 FIX: No start bonus — patrol coverage is earned by moving.
+			agent.metrics["patrol_tiles_visited"] = {}
 		else:
 			var base_dist: int = _closest_exit_distance(agent.grid_pos)
 			_base_exit_dist[agent.agent_id] = maxi(1, base_dist)
@@ -80,6 +86,8 @@ func setup(agents: Array[Agent], exit_rotator: ExitRotator, dog_npc: DogNPC, cam
 
 	EventBus.agent_escaped.connect(_on_agent_escaped)
 	EventBus.agent_captured.connect(_on_agent_captured)
+	# MODERATE #2 FIX: timeout is handled separately so capture_count stays clean.
+	EventBus.agent_timed_out.connect(_on_agent_timed_out)
 	EventBus.agent_blocked_move.connect(_on_agent_blocked_move)
 	EventBus.agent_entered_fire.connect(_on_agent_entered_fire)
 	EventBus.agent_eliminated_by_fire.connect(_on_agent_eliminated_by_fire)
@@ -125,6 +133,14 @@ func _tick_prisoner(agent: Agent) -> void:
 func _tick_police(agent: Agent) -> void:
 	if not agent.is_active:
 		return
+	# MODERATE #3 FIX: Award patrol coverage bonus for each unique tile visited.
+	# This incentivises active coverage-seeking play over standing still.
+	var patrol_tiles: Dictionary = agent.metrics.get("patrol_tiles_visited", {})
+	var tile_key: String = str(agent.grid_pos)
+	if not patrol_tiles.has(tile_key):
+		patrol_tiles[tile_key] = true
+		agent.metrics["patrol_tiles_visited"] = patrol_tiles
+		_add_score(agent, PATROL_COVERAGE_BONUS, "patrol_coverage")
 	if _is_pressuring_prisoner(agent):
 		_add_score(agent, PRESSURE_PER_SECOND * TICK_SECONDS, "pressure")
 
@@ -161,13 +177,34 @@ func _on_agent_captured(agent_id: int) -> void:
 
 	var police: Agent = _get_police()
 	if police != null:
-		police.metrics["captures_made"] = int(police.metrics.get("captures_made", 0)) + 1
+		# CRITICAL #1 FIX: Do NOT independently increment captures_made here.
+		# simulation_loop.gd now increments police.capture_count AND sets
+		# police.metrics["captures_made"] = police.capture_count synchronously.
+		# Reading from police.capture_count ensures a single source of truth.
+		# We still update the score and other metrics.
 		_add_score(police, CAPTURE_BONUS, "capture_bonus")
 		# Repeat-capture bonus
 		var prev: int = int(_capture_count_per_prisoner.get(agent_id, 0))
 		_capture_count_per_prisoner[agent_id] = prev + 1
 		if prev >= 1:
 			_add_score(police, REPEAT_CAPTURE_BONUS, "repeat_capture_bonus")
+		_update_performance(police)
+
+func _on_agent_timed_out(agent_id: int) -> void:
+	# MODERATE #2 FIX: Called instead of _on_agent_captured when time expires.
+	# Applies a lighter score penalty and does NOT award the police a capture bonus,
+	# because the police did not actively catch this prisoner.
+	var prisoner: Agent = _find_agent(agent_id)
+	if prisoner == null:
+		return
+	prisoner.metrics["timed_out"] = true
+	_add_score(prisoner, TIMEOUT_PENALTY, "timed_out")
+	prisoner.stealth_level = 0.0
+	_update_performance(prisoner)
+	# Police gets a smaller "containment" reward for keeping prisoners from escaping.
+	var police: Agent = _get_police()
+	if police != null:
+		_add_score(police, CAPTURE_BONUS * 0.40, "timeout_containment")
 		_update_performance(police)
 
 func _on_agent_blocked_move(agent_id: int, _from: Vector2i, _target: Vector2i, reason: String) -> void:
@@ -249,14 +286,17 @@ func _update_performance(agent: Agent) -> void:
 	var raw: float = float(agent.metrics.get("raw_score", 0.0))
 	var perf: float
 	if agent._role == "police":
-		var captures: int     = int(agent.metrics.get("captures_made",  0))
+		# CRITICAL #1 FIX: Read captures from agent.capture_count (single source),
+		# which simulation_loop.gd increments synchronously. agent.metrics["captures_made"]
+		# is kept in sync by simulation_loop as well, but capture_count is authoritative.
+		var captures: int     = agent.capture_count
 		var dog_assists: int  = int(agent.metrics.get("dog_assists",    0))
 		var cctv_assists: int = int(agent.metrics.get("cctv_assists",   0))
 		var fire_assists: int = int(agent.metrics.get("fire_assists",   0))
 		var escapes: int      = int(agent.metrics.get("escapes_allowed",0))
 
 		# Mission-based hunter score: raw contribution + captures + assists - escapes.
-		perf = 42.0 \
+		perf = 30.0 \
 			+ 0.055 * maxf(raw, 0.0) \
 			+ 9.0   * float(captures) \
 			+ 2.5   * float(dog_assists) \

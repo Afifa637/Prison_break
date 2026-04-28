@@ -40,6 +40,7 @@ var _current_tick: int = 0
 var _total_actions: int = 0
 var _escaped_agents: Array[int] = []
 var _captured_agents: Array[int] = []
+var _timed_out_agents: Array[int] = []
 var _eliminated_agents: Array[int] = []
 var _escape_tick: int = 0
 var _cycle_summaries: Array = []
@@ -246,7 +247,11 @@ func _resolve_movement(agent: Agent, action: Action) -> void:
 	elif action.type == Action.Type.SNEAK:
 		agent.stamina = maxf(0.0, agent.stamina - SNEAK_STAMINA_COST)
 	else:
-		agent.stamina = maxf(0.0, agent.stamina - MOVE_STAMINA_COST)
+		# MINOR #4 FIX: Honour per-agent stamina_move_cost override when set.
+		var move_cost: float = MOVE_STAMINA_COST
+		if agent.stats != null and agent.stats.stamina_move_cost > 0.0:
+			move_cost = agent.stats.stamina_move_cost
+		agent.stamina = maxf(0.0, agent.stamina - move_cost)
 
 	var start_pos: Vector2i = agent.grid_pos
 	agent.move_to(target)
@@ -404,7 +409,11 @@ func _check_wins() -> void:
 					_dog_npc.force_release_latch(_agents)
 				prisoner.capture_count += 1
 				_captured_agents.append(prisoner.agent_id)
-				police_agent.metrics["captures_inflicted"] = int(police_agent.metrics.get("captures_inflicted", 0)) + 1
+				# CRITICAL #1 FIX: Increment police capture_count so it stays in sync
+				# with scoring_system.gd's captures_made metric. Without this, police
+				# capture_count stays 0 even when captures are made, causing wrong UI.
+				police_agent.capture_count += 1
+				police_agent.metrics["captures_made"] = police_agent.capture_count
 				EventBus.emit_signal("agent_captured", prisoner.agent_id)
 				SoundManager.play("capture")
 				if prisoner.capture_count >= MAX_CAPTURES_BEFORE_ELIMINATION:
@@ -427,17 +436,27 @@ func _check_wins() -> void:
 		_finalize_game()
 
 func _lockdown_remaining_prisoners() -> void:
+	# MODERATE #2 FIX: Do NOT increment prisoner.capture_count here.
+	# A prisoner with capture_count=2 at time-up was being pushed to 3 (≥
+	# MAX_CAPTURES_BEFORE_ELIMINATION=3), falsely showing as "eliminated" on the
+	# results screen instead of "timed out."
+	# We now emit agent_timed_out so ScoringSystem can apply a timeout penalty
+	# independently, keeping capture stats clean and outcome labels accurate.
 	for prisoner: Agent in _agents:
 		if prisoner._role == "police" or not prisoner.is_active:
 			continue
 		_deactivate_agent(prisoner)
 		if not (prisoner.agent_id in _captured_agents):
-			_captured_agents.append(prisoner.agent_id)
-		prisoner.capture_count += 1
-		EventBus.emit_signal("agent_captured", prisoner.agent_id)
-		print("  *** [%s] LOCKDOWN CAPTURED at tick %d (time expired) ***" % [
+			# CRITICAL #3 FIX: Timed-out prisoners go into a separate array.
+			# Previously they were appended to _captured_agents, mixing real captures
+			# with timeouts and inflating the "captured_count" on the results screen.
+			_timed_out_agents.append(prisoner.agent_id)
+		# capture_count deliberately NOT incremented — this is a timeout, not a capture.
+		EventBus.emit_signal("agent_timed_out", prisoner.agent_id)
+		print("  *** [%s] TIMED OUT at tick %d (not a capture — count stays at %d) ***" % [
 			prisoner._role,
 			_current_tick,
+			prisoner.capture_count,
 		])
 
 func _deactivate_agent(agent: Node) -> void:
@@ -568,7 +587,7 @@ func _finalize_game() -> void:
 			"captured": agent.agent_id in _captured_agents,
 			"eliminated": agent.agent_id in _eliminated_agents,
 			"captures": agent.capture_count,
-			"captures_made": int(agent.metrics.get("captures_made", agent.metrics.get("captures_inflicted", 0))),
+			"captures_made": agent.capture_count,  # FIX #5: always read from single-source capture_count
 			"camera_hits": int(agent.metrics.get("camera_hits", 0)),
 			"last_camera_id": int(agent.metrics.get("last_camera_id", -1)),
 			"wall_hits": int(agent.metrics.get("wall_hits", 0)),
@@ -595,6 +614,7 @@ func _finalize_game() -> void:
 		"escape_tick": _escape_tick,
 		"escaped_count": escaped,
 		"captured_count": _captured_agents.size(),
+		"timeout_count": _timed_out_agents.size(),
 		"eliminated_count": eliminated,
 		"total_actions": _total_actions,
 		"total_ticks": _current_tick,
@@ -649,7 +669,14 @@ func _action_type_name(t: int) -> String:
 func _manhattan(a: Vector2i, b: Vector2i) -> int:
 	return absi(a.x - b.x) + absi(a.y - b.y)
 
+## MODERATE #5 FIX: verbose danger logging is off by default.
+## Set this to true in the inspector or via code only when debugging danger maps.
+## Previously this printed 4×/second (240 lines per match), drowning all useful logs.
+var _verbose_danger_log: bool = false
+
 func _on_danger_map_updated() -> void:
+	if not _verbose_danger_log:
+		return
 	var peak_pos := Vector2i(-1, -1)
 	var peak_val: float = 0.0
 	for pos: Vector2i in _danger_map.get_all():

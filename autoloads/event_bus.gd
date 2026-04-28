@@ -25,6 +25,10 @@ signal exit_deactivated(tile: Vector2i)
 signal minimax_decision(id: int, candidates: Array, chosen: Dictionary)
 signal mcts_decision(id: int, root_visits: int, candidates: Array, chosen: Dictionary)
 signal fuzzy_decision(id: int, inputs: Dictionary, rule_activations: Array, output: String, chosen_pos: Vector2i)
+# FIX #4: fuzzy_debug carries all four defuzzified scores for live HUD bar charts.
+signal fuzzy_debug(data: Dictionary)
+# MODERATE #2 FIX: separate timeout signal so lockdown never touches capture_count.
+signal agent_timed_out(agent_id: int)
 signal danger_map_updated()
 signal overlay_toggled(overlay_name: String, is_visible: bool)
 signal benchmark_run_completed(idx: int, metrics: Dictionary)

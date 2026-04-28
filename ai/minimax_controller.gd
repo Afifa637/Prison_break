@@ -23,6 +23,8 @@ var _cost_map: RefCounted = null
 var _danger_map: RefCounted = null
 var _exit_rotator: Node = null
 var _all_agents: Array = []
+var _pruned_count: int = 0
+var _evaluated_count: int = 0
 
 func _init() -> void:
 	_config = load("res://data/ai/minimax_config.tres") as MinimaxConfig
@@ -38,7 +40,10 @@ func choose_action(agent: Node2D, grid: Node, cost_map: RefCounted, exit_rotator
 	_exit_rotator = exit_rotator
 	_all_agents = all_agents
 
-	_zobrist_cache.clear()
+	# MINOR #3 FIX: _zobrist_cache.clear() removed from here.
+	# Clearing every call defeated the entire purpose of the transposition table —
+	# no states were ever reused. The cap-based clearing in _minimax() is sufficient.
+	# The cache now persists valid entries across ticks for meaningful speedup.
 
 	record_position(agent.grid_pos)
 
@@ -80,16 +85,48 @@ func choose_action(agent: Node2D, grid: Node, cost_map: RefCounted, exit_rotator
 		return _make_move_action(best_move)
 
 	var police_pos: Vector2i = Vector2i(-1, -1)
+	# FIX #2: Also capture Blue's position so the minimising player can model
+	# the real dual-prisoner problem instead of a simplified one-on-one pursuit.
+	var blue_pos: Vector2i = Vector2i(-1, -1)
 	for a in all_agents:
 		if a._role == "police" and a.is_active:
 			police_pos = a.grid_pos
-			break
+		elif a._role == "sneaky_blue" and a.is_active:
+			blue_pos = a.grid_pos
 
 	var candidates: Array = []
+	_pruned_count = 0
+	_evaluated_count = 0
 	for move: Vector2i in free_moves:
-		var score: float = _alphabeta(move, police_pos, active_exit, agent, maxi(_config.max_depth - 1, 0), -INF, INF, false)
+		var score: float = _alphabeta(move, police_pos, blue_pos, active_exit, agent, maxi(_config.max_depth - 1, 0), -INF, INF, false)
 		score -= movement_memory_penalty(move) * 1.25
-		candidates.append({"pos": move, "score": score})
+
+		# Capture police responses (minimizer layer) so they can be visualized.
+		# Re-run one minimizer ply to collect each police counter-move and score.
+		var police_responses: Array = []
+		if police_pos.x >= 0:
+			var police_moves: Array[Vector2i] = _grid.get_neighbours(police_pos)
+			if police_moves.is_empty():
+				police_moves = [police_pos]
+			var response_scores: Array = []
+			for pm: Vector2i in police_moves:
+				var r_score: float = _alphabeta(move, pm, blue_pos, active_exit, agent, maxi(_config.max_depth - 2, 0), -INF, INF, true)
+				var dist_red_pm: int = manhattan(pm, move)
+				var dist_blue_pm: int = 9999 if blue_pos.x < 0 else manhattan(pm, blue_pos)
+				var dual: float = minf(float(dist_red_pm), float(dist_blue_pm) * 1.1)
+				r_score -= dual * 0.08
+				response_scores.append({"tile": pm, "score": r_score})
+			# Sort ascending: minimizer picks lowest score (worst for Red first)
+			response_scores.sort_custom(func(a, b): return float(a["score"]) < float(b["score"]))
+			for ri in range(mini(response_scores.size(), 3)):
+				var rs: Dictionary = Dictionary(response_scores[ri])
+				police_responses.append({
+					"tile": rs.get("tile", police_pos),
+					"score": rs.get("score", 0.0),
+					"is_worst": ri == 0,
+				})
+
+		candidates.append({"pos": move, "score": score, "police_responses": police_responses})
 
 	candidates.sort_custom(func(a, b): return a["score"] > b["score"])
 
@@ -103,8 +140,18 @@ func choose_action(agent: Node2D, grid: Node, cost_map: RefCounted, exit_rotator
 
 	return _make_move_action(chosen_pos)
 
-func _alphabeta(red_pos: Vector2i, police_pos: Vector2i, exit: Vector2i, agent: Node2D, depth: int, alpha: float, beta: float, maximising: bool) -> float:
-	# ─── CRITICAL #4 FIX: terminal condition uses tile distance ───────────────
+func _alphabeta(
+		red_pos: Vector2i,
+		police_pos: Vector2i,
+		blue_pos: Vector2i,
+		exit: Vector2i,
+		agent: Node2D,
+		depth: int,
+		alpha: float,
+		beta: float,
+		maximising: bool) -> float:
+	# FIX #2: blue_pos is now threaded through the whole tree so the minimising
+	# player can compute min(dist_to_red, dist_to_blue × 1.1) when choosing moves.
 	var dist_police_tiles: float = float(manhattan(red_pos, police_pos))
 	var cache_key: int = _zobrist_key(red_pos, police_pos, depth, maximising)
 	if _zobrist_cache.has(cache_key):
@@ -121,10 +168,11 @@ func _alphabeta(red_pos: Vector2i, police_pos: Vector2i, exit: Vector2i, agent: 
 		if moves.is_empty():
 			moves = [red_pos]
 		for m: Vector2i in moves:
-			var eval_score: float = _alphabeta(m, police_pos, exit, agent, depth - 1, alpha, beta, false)
+			var eval_score: float = _alphabeta(m, police_pos, blue_pos, exit, agent, depth - 1, alpha, beta, false)
 			max_eval = maxf(max_eval, eval_score)
 			alpha = maxf(alpha, eval_score)
 			if beta <= alpha:
+				_pruned_count += moves.size() - (moves.find(m) + 1)
 				break
 		_zobrist_cache[cache_key] = max_eval
 		return max_eval
@@ -134,10 +182,22 @@ func _alphabeta(red_pos: Vector2i, police_pos: Vector2i, exit: Vector2i, agent: 
 		if moves.is_empty():
 			moves = [police_pos]
 		for m: Vector2i in moves:
-			var eval_score: float = _alphabeta(red_pos, m, exit, agent, depth - 1, alpha, beta, true)
+			# FIX #2: Police minimises over both prisoners simultaneously.
+			# It moves toward whichever target is cheaper to close in on,
+			# weighting Blue 10% lower so Red (the explicit tree agent) stays primary.
+			var dist_red: int  = manhattan(m, red_pos)
+			var dist_blue: int = 9999
+			if blue_pos.x >= 0:
+				dist_blue = manhattan(m, blue_pos)
+			var dual_threat: float = minf(float(dist_red), float(dist_blue) * 1.1)
+			var eval_score: float = _alphabeta(red_pos, m, blue_pos, exit, agent, depth - 1, alpha, beta, true)
+			# Blend alphabeta score with dual-threat pressure so the tree
+			# prefers police moves that threaten both prisoners.
+			eval_score -= dual_threat * 0.08
 			min_eval = minf(min_eval, eval_score)
 			beta = minf(beta, eval_score)
 			if beta <= alpha:
+				_pruned_count += moves.size() - (moves.find(m) + 1)
 				break
 		_zobrist_cache[cache_key] = min_eval
 		return min_eval
@@ -170,6 +230,14 @@ func _evaluate(red_pos: Vector2i, police_pos: Vector2i, exit: Vector2i, agent: N
 	# Gradient pressure — now in tiles, proportional to exit reward (w_exit × tiles)
 	if dist_police <= GUARD_PRESSURE_ZONE_TILES:
 		guard_penalty += ((GUARD_PRESSURE_ZONE_TILES - dist_police) / GUARD_PRESSURE_ZONE_TILES) * GRAD_PRESSURE_MAX
+
+	# Exit rotation timing penalty: if the exit will rotate before Red can reach it,
+	# penalize heading for this exit — it will be gone by the time Red arrives.
+	# Encourages the tree to find alternative paths rather than sprinting to a soon-to-rotate exit.
+	if _exit_rotator != null:
+		var ticks_left: int = _exit_rotator.ticks_until_next_rotation()
+		if ticks_left > 0 and int(dist_exit) > ticks_left:
+			guard_penalty += 80.0  # current exit unreachable before rotation
 
 	return _config.w_exit * (-dist_exit) \
 		+ _config.w_risk * (-danger) \
@@ -209,10 +277,18 @@ func _emit_decision(agent: Node2D, candidates: Array, chosen_pos: Vector2i) -> v
 					top_candidates.append(c)
 				chosen_score = float(c.get("score", 0.0))
 				break
+	var total_branches: int = 0
+	for cand in candidates:
+		total_branches += 1
+		if cand.get("police_responses", []).size() > 0:
+			total_branches += cand.get("police_responses", []).size()
 	var chosen_dict: Dictionary = {
 		"pos": chosen_pos,
 		"score": chosen_score,
 		"reason": _describe_choice_reason(agent, chosen_pos),
+		"pruned_branches": _pruned_count,
+		"evaluated_nodes": total_branches,
+		"search_depth": _config.max_depth if _config != null else 4,
 	}
 	EventBus.emit_signal("minimax_decision", agent.agent_id, top_candidates, chosen_dict)
 

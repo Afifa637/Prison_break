@@ -40,6 +40,8 @@ var _hover_btn  : int          = -1
 var _result     : Dictionary   = {}
 var _view_mode: int = ViewMode.RESULTS
 var _analysis_role: String = "rusher_red"
+var _timeline_scroll: int  = 0
+var _timeline_rect: Rect2  = Rect2()
 
 # -- Entry animation: 0->1 over ~0.6 s, drives fade-in -------------------
 var _show_t     : float        = 0.0
@@ -59,6 +61,17 @@ func _process(delta: float) -> void:
 	queue_redraw()
 
 func _input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.pressed:
+		if event.button_index == MOUSE_BUTTON_WHEEL_UP:
+			if _view_mode == ViewMode.AI_ANALYSIS and _timeline_rect.has_point(event.position):
+				_timeline_scroll = maxi(0, _timeline_scroll - 1)
+				queue_redraw()
+				return
+		elif event.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			if _view_mode == ViewMode.AI_ANALYSIS and _timeline_rect.has_point(event.position):
+				_timeline_scroll += 1
+				queue_redraw()
+				return
 	if event is InputEventMouseButton \
 			and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
@@ -77,12 +90,15 @@ func _input(event: InputEvent) -> void:
 				queue_redraw()
 			BTN_TAB_RED:
 				_analysis_role = "rusher_red"
+				_timeline_scroll = 0
 				queue_redraw()
 			BTN_TAB_BLUE:
 				_analysis_role = "sneaky_blue"
+				_timeline_scroll = 0
 				queue_redraw()
 			BTN_TAB_POLICE:
 				_analysis_role = "police"
+				_timeline_scroll = 0
 				queue_redraw()
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -153,11 +169,16 @@ func _draw() -> void:
 		"police_wins":
 			out_text = "CAPTURED -- POLICE WIN"
 			out_col  = C_RED_AG
+		"partial_escape":
+			# MINOR #5 FIX: Explicit partial_escape display text.
+			out_text = "PARTIAL ESCAPE"
+			out_col  = C_WARNING
 		"timeout":
 			out_text = "TIME LIMIT REACHED"
 			out_col  = C_WARNING
 		_:
-			out_text = "PARTIAL RESULT"
+			# MINOR #5 FIX: Generic fallback for any future outcome strings.
+			out_text = outcome.to_upper().replace("_", " ")
 			out_col  = C_WARNING
 
 	# Top decorative color strip (fades to transparent downward)
@@ -498,10 +519,15 @@ func _outcome_description(outcome: String, result: Dictionary) -> String:
 			return base
 		"police_wins":
 			return base
+		"partial_escape":
+			# MINOR #5 FIX: Explicit partial_escape description.
+			return "Partial prison break  ·  %s" % base
 		"timeout":
 			return "Tick limit reached  ·  %s" % base
 		_:
-			return base
+			# MINOR #5 FIX: Generic fallback — show the raw outcome string so
+			# new outcomes added in development are always visible on screen.
+			return "(%s)  ·  %s" % [outcome, base]
 
 func _prisoner_total_count() -> int:
 	var total: int = 0
@@ -513,16 +539,24 @@ func _prisoner_total_count() -> int:
 
 func _resolved_outcome_key() -> String:
 	var escaped: int = int(_result.get("escaped_count", 0))
-	var captured: int = int(_result.get("captured_count", 0))
 	var prisoner_total: int = _prisoner_total_count()
+	var raw_outcome: String = str(_result.get("outcome", "unknown"))
+
+	# CRITICAL #2 FIX: Check escaped counts BEFORE checking captured count.
+	# Previously "if captured >= 1: return police_wins" would fire even when
+	# one prisoner escaped and one was captured — overriding the correct
+	# "partial_escape" outcome from the simulation.
 	if escaped >= prisoner_total:
 		return "prisoners_win"
-	if captured >= 1:
-		return "police_wins"
-	var raw_outcome: String = str(_result.get("outcome", "unknown"))
-	if raw_outcome == "prisoners_win" or raw_outcome == "police_wins" or raw_outcome == "timeout":
-		return raw_outcome
-	return "timeout"
+
+	if escaped > 0:
+		return "partial_escape"
+
+	match raw_outcome:
+		"prisoners_win", "police_wins", "partial_escape", "timeout":
+			return raw_outcome
+
+	return raw_outcome
 
 func _resolved_outcome_presentation() -> Dictionary:
 	var key: String = _resolved_outcome_key()
@@ -548,11 +582,22 @@ func _resolved_outcome_presentation() -> Dictionary:
 				"subtitle": sub,
 				"accent": C_POLICE,
 			}
-		_:
+		"partial_escape":
+			# MINOR #5 FIX: partial_escape — one prisoner out, one caught.
+			# Uses a blended warning/highlight colour to signal the mixed result.
 			return {
-				"key": "timeout",
+				"key": key,
 				"title": heading,
-				"subtitle": sub,
+				"subtitle": ("Partial break — " + sub) if sub != "" else "Partial break",
+				"accent": C_WARNING,
+			}
+		_:
+			# MINOR #5 FIX: Generic fallback — any new outcome string added during
+			# development is shown explicitly rather than silently mapping to timeout.
+			return {
+				"key": key,
+				"title": heading,
+				"subtitle": ("(%s)" % key) if key != "timeout" else sub,
 				"accent": C_WARNING,
 			}
 
@@ -729,7 +774,8 @@ func _draw_results_agent_card(ar: Dictionary, rect: Rect2, rank: int, font: Font
 		role_col = Color(0.18, 1.00, 0.92)
 		role_name = "Sneaky Blue"
 		algo = "Monte Carlo Search"
-		stamina_max = 50.0
+		# MINOR #4 FIX: Updated from 50.0 to match new max_stamina=70.
+		stamina_max = 70.0
 
 	var delay: float = 0.16 * float(rank - 1)
 	var appear: float = clampf((_show_t - delay) / 0.52, 0.0, 1.0)
@@ -972,7 +1018,7 @@ func _draw_results_summary(rect: Rect2, outcome: String, font: Font, alpha: floa
 func _draw_ai_analysis_view(vp: Rect2, font: Font, alpha: float, outcome_text: String) -> void:
 	var container: Rect2 = _content_bounds(vp)
 	var cx: float = container.get_center().x
-	var header_h: float = clampf(container.size.y * 0.21, 138.0, 210.0)
+	var header_h: float = clampf(container.size.y * (0.18 if vp.size.y < 860.0 else 0.20), 120.0, 168.0)
 	var header_rect: Rect2 = Rect2(container.position.x, container.position.y, container.size.x, header_h)
 	var accent: Color = Color(0.22, 0.86, 1.0)
 
@@ -1017,7 +1063,7 @@ func _draw_ai_analysis_view(vp: Rect2, font: Font, alpha: float, outcome_text: S
 
 	var main_top: float = _btn_rects[BTN_TAB_RED].end.y + maxf(10.0, container.size.y * 0.012)
 	var nav_top: float = _btn_rects[BTN_REPLAY].position.y
-	var main_rect: Rect2 = Rect2(container.position.x, main_top, container.size.x, maxf(240.0, nav_top - main_top - 12.0))
+	var main_rect: Rect2 = Rect2(container.position.x, main_top, container.size.x, maxf(440.0, nav_top - main_top - 12.0))
 	draw_rect(main_rect, Color(0.04, 0.07, 0.11, 0.82 * alpha))
 	draw_rect(main_rect, Color(C_PANEL_BORDER.r, C_PANEL_BORDER.g, C_PANEL_BORDER.b, 0.24 * alpha), false)
 
@@ -1037,14 +1083,53 @@ func _draw_ai_analysis_view(vp: Rect2, font: Font, alpha: float, outcome_text: S
 	var algo: String = str(analysis_data.get("algorithm", "AI"))
 	var role_color: Color = _analysis_role_color(_analysis_role)
 
+	# ── Decision tick context ────────────────────────────────────────────────────
+	# Extract tick metadata so the examiner knows how representative the tree is.
+	# A decision from tick 12 in a 180-tick match is nearly meaningless on its own.
+	var decision_tick: int  = int(selected_decision.get("tick", -1))
+	var total_ticks: int    = int(_result.get("total_ticks", 0))
+	var tick_pct: float     = 100.0 * float(decision_tick) / maxf(float(total_ticks), 1.0) if decision_tick >= 0 else -1.0
+	# Positional context: where was the agent, where was the exit, where was police
+	var agent_tile: Vector2i  = Vector2i(selected_decision.get("current_tile", Vector2i(-1, -1)))
+	var chosen_tile_ctx: Vector2i = Vector2i(selected_decision.get("chosen_tile", Vector2i(-1, -1)))
+	# Police position is stored differently per algorithm
+	var police_tile: Vector2i = Vector2i(selected_decision.get("police_tile",
+		selected_decision.get("police_pos", Vector2i(-1, -1))))
+	var exit_tile_ctx: Vector2i = Vector2i(selected_decision.get("exit_tile", Vector2i(-1, -1)))
+
 	if font != null:
 		draw_string(font, main_rect.position + Vector2(18.0, 30.0), "%s — %s" % [agent_name, algo], HORIZONTAL_ALIGNMENT_LEFT, -1, 25, role_color)
 		draw_string(font, main_rect.position + Vector2(18.0, 52.0), selected_note, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Color(C_DIM.r, C_DIM.g, C_DIM.b, 0.90 * alpha))
 		if chosen_from_timeline:
 			draw_string(font, main_rect.position + Vector2(430.0, 52.0), "(auto-picked from timeline)", HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Color(C_WARNING.r, C_WARNING.g, C_WARNING.b, 0.86 * alpha))
 
-	var decision_rect: Rect2 = Rect2(main_rect.position.x + 12.0, main_rect.position.y + 64.0, main_rect.size.x * 0.68 - 18.0, main_rect.size.y - 76.0)
-	var timeline_rect: Rect2 = Rect2(decision_rect.end.x + 10.0, main_rect.position.y + 64.0, main_rect.end.x - decision_rect.end.x - 22.0, main_rect.size.y - 76.0)
+		# Tick context line — shown prominently so examiner can judge representativeness
+		if decision_tick >= 0:
+			var tick_line: String
+			if tick_pct >= 0.0:
+				tick_line = "Decision from tick T%d / %d  (%.0f%% through match)" % [decision_tick, total_ticks, tick_pct]
+			else:
+				tick_line = "Decision from tick T%d" % decision_tick
+			_draw_results_centered_text(font, tick_line,
+				Vector2(main_rect.get_center().x, main_rect.position.y + 52.0), 14,
+				Color(C_TEXT.r, C_TEXT.g, C_TEXT.b, 0.96 * alpha))
+
+		# Positional context line — agent tile, exit, police so examiner can read the tree
+		var ctx_parts: Array = []
+		if agent_tile.x >= 0:
+			ctx_parts.append("Agent %s" % _tile_str(agent_tile))
+		if exit_tile_ctx.x >= 0:
+			ctx_parts.append("Exit %s" % _tile_str(exit_tile_ctx))
+		if police_tile.x >= 0:
+			ctx_parts.append("Police %s" % _tile_str(police_tile))
+		if ctx_parts.size() > 0:
+			var ctx_line: String = "  ·  ".join(ctx_parts)
+			_draw_results_centered_text(font, ctx_line,
+				Vector2(main_rect.get_center().x, main_rect.position.y + 69.0), 12,
+				Color(C_DIM.r, C_DIM.g, C_DIM.b, 0.88 * alpha))
+
+	var decision_rect: Rect2 = Rect2(main_rect.position.x + 12.0, main_rect.position.y + 82.0, main_rect.size.x * 0.68 - 18.0, main_rect.size.y - 94.0)
+	var timeline_rect: Rect2 = Rect2(decision_rect.end.x + 10.0, main_rect.position.y + 82.0, main_rect.end.x - decision_rect.end.x - 22.0, main_rect.size.y - 94.0)
 	draw_rect(decision_rect, Color(0.01, 0.03, 0.05, 0.95 * alpha))
 	draw_rect(decision_rect, Color(role_color.r, role_color.g, role_color.b, 0.28 * alpha), false)
 	draw_rect(timeline_rect, Color(0.01, 0.03, 0.05, 0.95 * alpha))
@@ -1058,6 +1143,7 @@ func _draw_ai_analysis_view(vp: Rect2, font: Font, alpha: float, outcome_text: S
 		_:
 			_draw_fuzzy_analysis(decision_rect, selected_decision, font, alpha)
 
+	_timeline_rect = timeline_rect
 	_draw_decision_timeline(timeline_rect, timeline, font, alpha)
 	_draw_results_nav(container.get_center().x, _btn_rects[BTN_REPLAY].position.y, font, alpha)
 
@@ -1115,7 +1201,7 @@ func _draw_minimax_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha
 	_draw_tree_node(root_rect, "ROOT NODE", "Red @ %s" % _tile_str(root_tile), C_RED_AG, font, alpha, true)
 	var exit_distance: int = int(decision.get("exit_distance", -1))
 	var police_distance: int = int(decision.get("police_distance", -1))
-	_draw_results_centered_text(font, "Minimax root evaluates possible moves", Vector2(rect.get_center().x, root_rect.end.y + 16.0), 12, C_DIM)
+	_draw_results_centered_text(font, "Minimax (4-ply):  Root → Red moves → Police response → Leaf", Vector2(rect.get_center().x, root_rect.end.y + 16.0), 12, C_DIM)
 	_draw_results_centered_text(font, "Exit %d   •   Police %d   •   Branches %d" % [exit_distance, police_distance, candidates.size()], Vector2(rect.get_center().x, root_rect.end.y + 34.0), 11, C_DIM)
 
 	var count: int = mini(5, candidates.size())
@@ -1123,17 +1209,25 @@ func _draw_minimax_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha
 		draw_string(font, rect.position + Vector2(16.0, 96.0), "No minimax candidates recorded", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, C_DIM)
 		draw_string(font, rect.position + Vector2(16.0, 118.0), reason, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 24.0, 12, C_TEXT)
 		return
+
 	var spacing: float = (rect.size.x - 38.0) / float(count)
-	var candidate_y: float = rect.position.y + 132.0
-	var leaf_y: float = rect.end.y - 86.0
-	var legend_rect: Rect2 = Rect2(rect.position.x + 14.0, rect.end.y - 34.0, rect.size.x - 28.0, 24.0)
+	var candidate_y: float = rect.position.y + 126.0
+	var candidate_h: float = 82.0
+	# Police response row sits between the Red move nodes and the leaf scores
+	var police_y: float = candidate_y + candidate_h + 12.0
+	var police_h: float = 54.0
+	var leaf_y: float = police_y + police_h + 10.0
+	var leaf_h: float = 44.0
+
+	# Legend
+	var legend_rect: Rect2 = Rect2(rect.position.x + 14.0, rect.end.y - 76.0, rect.size.x - 28.0, 22.0)
 	draw_rect(legend_rect, Color(0.03, 0.06, 0.10, 0.86 * alpha))
 	draw_rect(legend_rect, Color(0.32, 0.44, 0.58, 0.28 * alpha), false)
-	draw_string(font, legend_rect.position + Vector2(8.0, 16.0), "Legend: Root → Decision nodes → Leaf evaluation  |  Green = chosen path", HORIZONTAL_ALIGNMENT_LEFT, legend_rect.size.x - 12.0, 11, C_DIM)
+	draw_string(font, legend_rect.position + Vector2(8.0, 16.0), "Legend: Root → Red move nodes → Police response (orange=worst for Red) → Leaf  |  Green = chosen path", HORIZONTAL_ALIGNMENT_LEFT, legend_rect.size.x - 12.0, 10, C_DIM)
 
 	for i in range(count):
 		var c: Dictionary = Dictionary(candidates[i])
-		var node_rect: Rect2 = Rect2(rect.position.x + 14.0 + spacing * float(i), candidate_y, spacing - 12.0, 98.0)
+		var node_rect: Rect2 = Rect2(rect.position.x + 14.0 + spacing * float(i), candidate_y, spacing - 12.0, candidate_h)
 		var is_chosen: bool = bool(c.get("chosen", false)) or Vector2i(c.get("tile", Vector2i(-1, -1))) == chosen_tile
 		var risk_label: String = str(c.get("risk", "LOW"))
 		var risk_col: Color = Color(0.62, 0.72, 0.84)
@@ -1142,26 +1236,51 @@ func _draw_minimax_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha
 		elif risk_label == "MED":
 			risk_col = Color(0.92, 0.68, 0.28)
 		var ac: Color = C_HIGHLIGHT if is_chosen else risk_col
-		_draw_tree_link(root_rect.get_center(), node_rect.get_center(), ac, 3.0 if is_chosen else 2.0, alpha)
+		_draw_tree_link(Vector2(root_rect.get_center().x, root_rect.end.y), Vector2(node_rect.get_center().x, node_rect.position.y), ac, 3.0 if is_chosen else 2.0, alpha)
 		_draw_tree_node(
 			node_rect,
 			str(c.get("action", "MOVE")),
-			"Tile %s | S %.2f | %s" % [_tile_str(Vector2i(c.get("tile", Vector2i(-1, -1)))), float(c.get("score", 0.0)), risk_label],
-			ac,
-			font,
-			alpha,
-			is_chosen
+			"Tile %s | S %.0f | %s" % [_tile_str(Vector2i(c.get("tile", Vector2i(-1, -1)))), float(c.get("score", 0.0)), risk_label],
+			ac, font, alpha, is_chosen
 		)
-		var leaf_rect: Rect2 = Rect2(node_rect.position.x + 6.0, leaf_y, node_rect.size.x - 12.0, 44.0)
-		if is_chosen:
-			_draw_tree_link(node_rect.get_center(), leaf_rect.get_center(), C_HIGHLIGHT, 3.0, alpha)
-			_draw_tree_leaf(leaf_rect, "Chosen leaf", "%.2f" % float(c.get("score", 0.0)), C_HIGHLIGHT, font, alpha)
-		else:
-			_draw_dashed_line(node_rect.get_center(), leaf_rect.get_center(), Color(0.56, 0.62, 0.70, 0.45 * alpha), 2.0, 7.0)
-			_draw_tree_leaf(leaf_rect, "Leaf", "%.2f" % float(c.get("score", 0.0)), Color(0.55, 0.64, 0.74), font, alpha)
 
-	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 54.0), "Why chosen", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 11, C_DIM)
-	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 16.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 12, C_TEXT)
+		# ── Police response row ─────────────────────────────────────────────────
+		# Shows the minimizer's best counter-move for each Red candidate.
+		# Orange border = worst-for-Red response (the one minimax actually assumes).
+		var responses: Array = Array(c.get("police_responses", []))
+		var police_node_rect: Rect2 = Rect2(node_rect.position.x, police_y, node_rect.size.x, police_h)
+		if responses.size() > 0:
+			var resp: Dictionary = Dictionary(responses[0])  # worst for Red = first after ascending sort
+			var r_score: float = float(resp.get("score", 0.0))
+			var is_worst: bool = bool(resp.get("is_worst", true))
+			var r_col: Color = Color(1.0, 0.55, 0.15) if is_worst else Color(0.55, 0.64, 0.74)
+			_draw_tree_link(Vector2(node_rect.get_center().x, node_rect.end.y), Vector2(police_node_rect.get_center().x, police_node_rect.position.y), r_col, 2.0 if is_chosen else 1.5, alpha)
+			draw_rect(police_node_rect, Color(0.08, 0.04, 0.02, 0.95 * alpha))
+			draw_rect(police_node_rect, Color(r_col.r, r_col.g, r_col.b, (0.80 if is_worst else 0.38) * alpha), false, 2.0)
+			draw_rect(Rect2(police_node_rect.position, Vector2(police_node_rect.size.x, 3.0)), Color(r_col.r, r_col.g, r_col.b, 0.85 * alpha))
+			draw_string(font, police_node_rect.position + Vector2(6.0, 16.0), "POLICE COUNTERS" if is_worst else "Police responds", HORIZONTAL_ALIGNMENT_LEFT, police_node_rect.size.x - 8.0, 9, Color(r_col.r, r_col.g, r_col.b, 0.98 * alpha))
+			var r_tile_str: String = _tile_str(Vector2i(resp.get("tile", Vector2i(-1,-1))))
+			draw_string(font, police_node_rect.position + Vector2(6.0, 30.0), "→ %s  score %.0f" % [r_tile_str, r_score], HORIZONTAL_ALIGNMENT_LEFT, police_node_rect.size.x - 8.0, 10, C_TEXT)
+			if is_worst:
+				draw_string(font, police_node_rect.position + Vector2(6.0, 45.0), "worst for Red (α-β)", HORIZONTAL_ALIGNMENT_LEFT, police_node_rect.size.x - 8.0, 9, Color(1.0, 0.55, 0.15, 0.80 * alpha))
+		else:
+			# No response data — show pruned indicator
+			_draw_dashed_line(node_rect.get_center(), police_node_rect.get_center(), Color(0.40, 0.44, 0.50, 0.35 * alpha), 1.5, 6.0)
+			draw_rect(police_node_rect, Color(0.06, 0.06, 0.08, 0.70 * alpha))
+			draw_rect(police_node_rect, Color(0.30, 0.34, 0.40, 0.28 * alpha), false)
+			draw_string(font, police_node_rect.position + Vector2(6.0, 22.0), "α-β pruned", HORIZONTAL_ALIGNMENT_LEFT, police_node_rect.size.x - 8.0, 10, C_DIM)
+
+		# ── Leaf score ──────────────────────────────────────────────────────────
+		var leaf_rect: Rect2 = Rect2(node_rect.position.x + 4.0, leaf_y, node_rect.size.x - 8.0, leaf_h)
+		if is_chosen:
+			_draw_tree_link(Vector2(police_node_rect.get_center().x, police_node_rect.end.y), Vector2(leaf_rect.get_center().x, leaf_rect.position.y), C_HIGHLIGHT, 2.5, alpha)
+			_draw_tree_leaf(leaf_rect, "Chosen leaf", "%.0f" % float(c.get("score", 0.0)), C_HIGHLIGHT, font, alpha)
+		else:
+			_draw_dashed_line(police_node_rect.get_center(), leaf_rect.get_center(), Color(0.56, 0.62, 0.70, 0.40 * alpha), 1.5, 7.0)
+			_draw_tree_leaf(leaf_rect, "Leaf", "%.0f" % float(c.get("score", 0.0)), Color(0.55, 0.64, 0.74), font, alpha)
+
+	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 52.0), "Why chosen", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 11, C_DIM)
+	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 38.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 12, C_TEXT)
 
 func _draw_mcts_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha: float) -> void:
 	if font == null:
@@ -1172,7 +1291,7 @@ func _draw_mcts_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha: f
 	var candidates: Array = Array(decision.get("candidates", []))
 	var root_rect: Rect2 = Rect2(rect.position.x + rect.size.x * 0.5 - 150.0, rect.position.y + 16.0, 300.0, 76.0)
 	_draw_tree_node(root_rect, "ROOT NODE", "Blue @ %s | Rollouts %d" % [_tile_str(root_tile), rollouts], Color(0.18, 1.00, 0.92), font, alpha, true)
-	_draw_results_centered_text(font, "MCTS explores branches with Monte Carlo rollouts", Vector2(rect.get_center().x, root_rect.end.y + 16.0), 12, C_DIM)
+	_draw_results_centered_text(font, "MCTS selects moves by UCT = exploit (reward) + explore (bonus)", Vector2(rect.get_center().x, root_rect.end.y + 16.0), 12, C_DIM)
 
 	var count: int = mini(5, candidates.size())
 	if count <= 0:
@@ -1180,38 +1299,93 @@ func _draw_mcts_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha: f
 		draw_string(font, rect.position + Vector2(16.0, 116.0), reason, HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 24.0, 12, C_TEXT)
 		return
 	var spacing: float = (rect.size.x - 38.0) / float(count)
-	var y: float = rect.position.y + 132.0
+	var y: float = rect.position.y + 126.0
+	var node_h: float = 165.0  # taller to fit UCT breakdown bars + rollout outcome badge
 	var max_visits: int = 1
+	var max_uct: float = 0.001
 	for c_var in candidates:
 		var c_dict: Dictionary = Dictionary(c_var)
 		max_visits = maxi(max_visits, int(c_dict.get("visits", 0)))
+		max_uct = maxf(max_uct, float(c_dict.get("uct_total", float(c_dict.get("ucb", 0.0)))))
+
 	for i in range(count):
 		var c: Dictionary = Dictionary(candidates[i])
-		var node_rect: Rect2 = Rect2(rect.position.x + 14.0 + spacing * float(i), y, spacing - 12.0, 110.0)
+		var node_rect: Rect2 = Rect2(rect.position.x + 14.0 + spacing * float(i), y, spacing - 12.0, node_h)
 		var is_chosen: bool = bool(c.get("chosen", false))
 		var ac: Color = Color(0.18, 1.00, 0.92) if is_chosen else Color(0.49, 0.68, 0.80)
-		_draw_tree_link(root_rect.get_center(), node_rect.get_center(), ac, 3.0 if is_chosen else 2.0, alpha)
+		_draw_tree_link(Vector2(root_rect.get_center().x, root_rect.end.y), Vector2(node_rect.get_center().x, node_rect.position.y), ac, 3.0 if is_chosen else 2.0, alpha)
 		draw_rect(node_rect, Color(0.02, 0.05, 0.08, 0.96 * alpha))
 		draw_rect(node_rect, Color(ac.r, ac.g, ac.b, (0.80 if is_chosen else 0.32) * alpha), false, 2.0)
 		var visits: int = int(c.get("visits", 0))
 		var avg_reward: float = float(c.get("avg_reward", 0.0))
+		var uct_exploit: float = float(c.get("uct_exploit", avg_reward))
+		var uct_explore: float = float(c.get("uct_explore", 0.0))
+		var uct_total: float = float(c.get("uct_total", float(c.get("ucb", 0.0))))
 		var visit_ratio: float = clampf(float(visits) / float(max_visits), 0.0, 1.0)
 		var reward_ratio: float = clampf((avg_reward + 1.0) * 0.5, 0.0, 1.0)
-		draw_string(font, node_rect.position + Vector2(8.0, 18.0), str(c.get("action", "MOVE")), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 12, Color(ac.r, ac.g, ac.b, 0.98 * alpha))
-		draw_string(font, node_rect.position + Vector2(8.0, 35.0), "Tile %s" % _tile_str(Vector2i(c.get("tile", Vector2i(-1, -1)))), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
-		draw_string(font, node_rect.position + Vector2(8.0, 51.0), "Visits %d" % visits, HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
-		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 56.0, node_rect.size.x - 16.0, 9.0), Color(0.08, 0.12, 0.16, 0.95))
-		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 56.0, (node_rect.size.x - 16.0) * visit_ratio, 9.0), Color(0.20, 0.86, 1.0, 0.88))
-		draw_string(font, node_rect.position + Vector2(8.0, 78.0), "Avg Reward %.2f" % avg_reward, HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
-		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 83.0, node_rect.size.x - 16.0, 9.0), Color(0.08, 0.12, 0.16, 0.95))
-		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 83.0, (node_rect.size.x - 16.0) * reward_ratio, 9.0), Color(0.18, 1.00, 0.66, 0.88))
-		draw_string(font, node_rect.position + Vector2(8.0, 104.0), "Risk %s" % str(c.get("danger", "LOW")), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 9, C_DIM)
+
+		# Action label + tile
+		draw_string(font, node_rect.position + Vector2(8.0, 16.0), str(c.get("action", "MOVE")), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 12, Color(ac.r, ac.g, ac.b, 0.98 * alpha))
+		draw_string(font, node_rect.position + Vector2(8.0, 30.0), "Tile %s" % _tile_str(Vector2i(c.get("tile", Vector2i(-1, -1)))), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
+
+		# Visit bar
+		draw_string(font, node_rect.position + Vector2(8.0, 46.0), "Visits %d" % visits, HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 50.0, node_rect.size.x - 16.0, 8.0), Color(0.08, 0.12, 0.16, 0.95))
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 50.0, (node_rect.size.x - 16.0) * visit_ratio, 8.0), Color(0.20, 0.86, 1.0, 0.88))
+
+		# Avg reward bar
+		draw_string(font, node_rect.position + Vector2(8.0, 70.0), "Avg Reward %.2f" % avg_reward, HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 10, C_TEXT)
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 74.0, node_rect.size.x - 16.0, 8.0), Color(0.08, 0.12, 0.16, 0.95))
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 74.0, (node_rect.size.x - 16.0) * reward_ratio, 8.0), Color(0.18, 1.00, 0.66, 0.88))
+
+		# UCT breakdown: stacked exploit (blue) + explore (green) bars
+		# This directly answers "why was this chosen over a more-visited branch?"
+		var bar_w: float = node_rect.size.x - 16.0
+		var total_ratio: float  = clampf(uct_total  / max_uct, 0.0, 1.0) if max_uct > 0.0 else 0.0
+		var exploit_ratio: float = total_ratio * (uct_exploit / maxf(uct_total, 0.0001))
+		var explore_ratio: float = total_ratio * (uct_explore / maxf(uct_total, 0.0001))
+		draw_string(font, node_rect.position + Vector2(8.0, 94.0), "UCT = exploit + explore", HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 9, Color(0.80, 0.88, 1.0, 0.90 * alpha))
+		# Background
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 98.0, bar_w, 10.0), Color(0.06, 0.08, 0.12, 0.95))
+		# Exploit portion (blue)
+		draw_rect(Rect2(node_rect.position.x + 8.0, node_rect.position.y + 98.0, bar_w * exploit_ratio, 10.0), Color(0.20, 0.50, 1.0, 0.90))
+		# Explore portion stacked on top of exploit (green)
+		var explore_start_x: float = node_rect.position.x + 8.0 + bar_w * exploit_ratio
+		draw_rect(Rect2(explore_start_x, node_rect.position.y + 98.0, bar_w * explore_ratio, 10.0), Color(0.18, 0.90, 0.44, 0.90))
+		# Total UCT label
+		draw_string(font, node_rect.position + Vector2(8.0, 121.0), "%.2f exploit + %.2f explore = %.2f" % [uct_exploit, uct_explore, uct_total], HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 9, C_TEXT)
+
+		# Rollout outcome badge — gives examiner instant understanding of what each branch modelled
+		var rollout_outcome: String = str(c.get("rollout_outcome", ""))
+		var rollout_summary: String = str(c.get("rollout_summary", ""))
+		var badge_color: Color
+		var badge_text: String = ""
+		if rollout_outcome == "escaped":
+			badge_color = Color(0.18, 0.90, 0.44)
+			badge_text = "✓ Escaped"
+		elif rollout_outcome == "caught":
+			badge_color = Color(0.96, 0.28, 0.28)
+			badge_text = "✗ Caught"
+		elif rollout_outcome == "timed_out":
+			badge_color = Color(0.55, 0.60, 0.68)
+			badge_text = "~ Timeout"
+		if badge_text != "":
+			var badge_rect: Rect2 = Rect2(node_rect.position.x + 4.0, node_rect.position.y + 126.0, node_rect.size.x - 8.0, 14.0)
+			draw_rect(badge_rect, Color(badge_color.r * 0.25, badge_color.g * 0.25, badge_color.b * 0.25, 0.92 * alpha))
+			draw_rect(badge_rect, Color(badge_color.r, badge_color.g, badge_color.b, 0.72 * alpha), false)
+			_draw_results_centered_text(font, badge_text, badge_rect.get_center() + Vector2(0.0, 5.0), 9, Color(badge_color.r, badge_color.g, badge_color.b, 0.98 * alpha))
+		if rollout_summary != "":
+			draw_string(font, Vector2(node_rect.position.x + 4.0, node_rect.end.y + 14.0), rollout_summary, HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x + 20.0, 9, C_DIM)
+
+		# Risk + chosen annotation
+		draw_string(font, node_rect.position + Vector2(8.0, 137.0), "Risk %s" % str(c.get("danger", "LOW")), HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x - 10.0, 9, C_DIM)
 		if is_chosen:
 			draw_rect(node_rect.grow(2.0), Color(C_HIGHLIGHT.r, C_HIGHLIGHT.g, C_HIGHLIGHT.b, 0.22 * alpha), false)
-			draw_string(font, node_rect.position + Vector2(8.0, node_rect.end.y + 16.0), "Chosen: highest useful reward / visits", HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x + 10.0, 10, C_HIGHLIGHT)
+			draw_string(font, Vector2(node_rect.position.x + 8.0, node_rect.end.y + 14.0), "Chosen: highest UCT", HORIZONTAL_ALIGNMENT_LEFT, node_rect.size.x + 10.0, 10, C_HIGHLIGHT)
 
 	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 36.0), "Why chosen", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 24.0, 11, C_DIM)
 	draw_string(font, rect.position + Vector2(16.0, rect.end.y - 16.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 24.0, 12, C_TEXT)
+
 
 func _draw_tree_node(rect: Rect2, title: String, subtitle: String, accent: Color, font: Font, alpha: float, selected: bool) -> void:
 	draw_rect(rect, Color(0.03, 0.06, 0.10, 0.95 * alpha))
@@ -1239,78 +1413,113 @@ func _draw_fuzzy_analysis(rect: Rect2, decision: Dictionary, font: Font, alpha: 
 	var target_agent: String = str(decision.get("target_agent", "Unknown"))
 	var reason: String = str(decision.get("reason", "Not recorded"))
 	var inputs: Dictionary = Dictionary(decision.get("inputs", {}))
-	var scores: Dictionary = Dictionary(decision.get("scores", {}))
 	var rules: Array = Array(decision.get("rules", []))
 	var chosen_color: Color = Color(0.20, 0.90, 1.0) if target_agent.find("Blue") >= 0 else C_RED_AG
 	var behavior_color: Color = _behavior_color(behavior)
 
-	var title_rect: Rect2 = Rect2(rect.position.x + 14.0, rect.position.y + 12.0, rect.size.x - 28.0, 78.0)
-	draw_rect(title_rect, Color(0.07, 0.11, 0.18, 0.96 * alpha))
-	draw_rect(title_rect, Color(C_POLICE.r, C_POLICE.g, C_POLICE.b, 0.40 * alpha), false)
-	draw_rect(Rect2(title_rect.position, Vector2(title_rect.size.x, 4.0)), Color(C_POLICE.r, C_POLICE.g, C_POLICE.b, 0.84 * alpha))
-	draw_string(font, title_rect.position + Vector2(10.0, 23.0), "FUZZY DECISION SUMMARY", HORIZONTAL_ALIGNMENT_LEFT, title_rect.size.x - 20.0, 12, C_DIM)
-	draw_string(font, title_rect.position + Vector2(10.0, 46.0), "Behavior: %s" % behavior, HORIZONTAL_ALIGNMENT_LEFT, title_rect.size.x * 0.48, 18, behavior_color)
-	draw_string(font, title_rect.position + Vector2(title_rect.size.x * 0.52, 46.0), "Target: %s" % target_agent, HORIZONTAL_ALIGNMENT_LEFT, title_rect.size.x * 0.45, 18, chosen_color)
-	draw_string(font, title_rect.position + Vector2(10.0, 68.0), "Final action tile %s" % _tile_str(Vector2i(decision.get("chosen_tile", Vector2i(-1, -1)))), HORIZONTAL_ALIGNMENT_LEFT, title_rect.size.x - 20.0, 12, C_TEXT)
+	# MAJOR #2 FIX: Draw a real police decision tree using the full fuzzy data
+	# now emitted by fuzzy_controller.gd (chase/intercept/investigate/patrol scores
+	# plus red/blue target scores). Previously only one fake rule was available.
 
-	var content_y: float = title_rect.end.y + 8.0
-	var content_h: float = rect.end.y - content_y - 12.0
-	var left_w: float = rect.size.x * 0.48
-	var right_w: float = rect.size.x - left_w - 28.0
-	var left_rect: Rect2 = Rect2(rect.position.x + 14.0, content_y, left_w, content_h)
-	var right_rect: Rect2 = Rect2(left_rect.end.x + 12.0, content_y, right_w, content_h)
-	draw_rect(left_rect, Color(0.02, 0.04, 0.06, 0.92 * alpha))
-	draw_rect(left_rect, Color(C_POLICE.r, C_POLICE.g, C_POLICE.b, 0.22 * alpha), false)
-	draw_rect(right_rect, Color(0.02, 0.04, 0.06, 0.92 * alpha))
-	draw_rect(right_rect, Color(C_PANEL_BORDER.r, C_PANEL_BORDER.g, C_PANEL_BORDER.b, 0.22 * alpha), false)
+	# -- Root node ---
+	var root_rect: Rect2 = Rect2(rect.position.x + rect.size.x * 0.5 - 150.0, rect.position.y + 14.0, 300.0, 66.0)
+	_draw_tree_node(root_rect, "POLICE ROOT", "Hunter fuzzy evaluation", C_POLICE, font, alpha, true)
 
-	var red_score: float = float(scores.get("red_target_score", 0.0))
-	var blue_score: float = float(scores.get("blue_target_score", 0.0))
-	var cctv_conf: float = clampf(float(inputs.get("cctv_confidence", 0.0)), 0.0, 1.0)
-	var alert_level: float = clampf(float(int(inputs.get("alert_level", 0))) / 100.0, 0.0, 1.0)
-	draw_string(font, left_rect.position + Vector2(10.0, 18.0), "Threat / Target Comparison", HORIZONTAL_ALIGNMENT_LEFT, left_rect.size.x - 20.0, 13, C_DIM)
+	var tree_area_y: float = root_rect.end.y + 10.0
+	var tree_area_h: float = rect.end.y - tree_area_y - 12.0
+	var col_w: float = (rect.size.x - 28.0) / 3.0
 
-	var red_card: Rect2 = Rect2(left_rect.position.x + 10.0, left_rect.position.y + 28.0, left_rect.size.x - 20.0, 88.0)
-	var blue_card: Rect2 = Rect2(left_rect.position.x + 10.0, red_card.end.y + 8.0, left_rect.size.x - 20.0, 88.0)
-	_draw_fuzzy_target_card(red_card, "RED", C_RED_AG, red_score, int(inputs.get("red_distance", -1)), int(inputs.get("red_exit_distance", -1)), int(inputs.get("red_stealth", 0)), target_agent.find("Red") >= 0, font, alpha)
-	_draw_fuzzy_target_card(blue_card, "BLUE", Color(0.20, 0.90, 1.0), blue_score, int(inputs.get("blue_distance", -1)), int(inputs.get("blue_exit_distance", -1)), int(inputs.get("blue_stealth", 0)), target_agent.find("Blue") >= 0, font, alpha)
+	# -- Column 1: Target Selection ---
+	var col1_x: float = rect.position.x + 8.0
+	var col1_header: Rect2 = Rect2(col1_x, tree_area_y, col_w - 8.0, 28.0)
+	draw_rect(col1_header, Color(0.04, 0.08, 0.14, 0.92 * alpha))
+	draw_rect(col1_header, Color(C_POLICE.r, C_POLICE.g, C_POLICE.b, 0.40 * alpha), false)
+	draw_string(font, col1_header.position + Vector2(8.0, 18.0), "Target Selection", HORIZONTAL_ALIGNMENT_LEFT, col1_header.size.x - 12.0, 12, C_POLICE)
+	_draw_tree_link(root_rect.get_center(), Vector2(col1_header.get_center().x, col1_header.position.y), C_POLICE, 2.0, alpha)
 
-	_draw_bar_with_label(Vector2(left_rect.position.x + 10.0, blue_card.end.y + 12.0), left_rect.size.x - 20.0, "CCTV Confidence", cctv_conf, C_POLICE, font, alpha)
-	_draw_bar_with_label(Vector2(left_rect.position.x + 10.0, blue_card.end.y + 48.0), left_rect.size.x - 20.0, "Alert Level", alert_level, C_WARNING, font, alpha)
+	var red_score: float = float(inputs.get("red_target_score", 0.0))
+	var blue_score: float = float(inputs.get("blue_target_score", 0.0))
+	var red_card: Rect2 = Rect2(col1_x, col1_header.end.y + 6.0, col_w - 8.0, 80.0)
+	var blue_card: Rect2 = Rect2(col1_x, red_card.end.y + 6.0, col_w - 8.0, 80.0)
+	var red_chosen: bool = target_agent.find("Red") >= 0
+	var blue_chosen: bool = target_agent.find("Blue") >= 0
+	_draw_fuzzy_target_card(red_card, "RED", C_RED_AG, red_score,
+		int(inputs.get("red_distance", -1)), int(inputs.get("red_exit_distance", -1)),
+		int(inputs.get("red_stealth", 0)), red_chosen, font, alpha)
+	_draw_fuzzy_target_card(blue_card, "BLUE", Color(0.20, 0.90, 1.0), blue_score,
+		int(inputs.get("blue_distance", -1)), int(inputs.get("blue_exit_distance", -1)),
+		int(inputs.get("blue_stealth", 0)), blue_chosen, font, alpha)
 
-	if target_agent != "Unknown":
-		var winner_rect: Rect2 = Rect2(left_rect.position.x + 10.0, left_rect.end.y - 30.0, left_rect.size.x - 20.0, 22.0)
-		draw_rect(winner_rect, Color(chosen_color.r, chosen_color.g, chosen_color.b, 0.14 * alpha))
-		draw_rect(winner_rect, Color(chosen_color.r, chosen_color.g, chosen_color.b, 0.52 * alpha), false)
-		draw_string(font, Vector2(winner_rect.position.x + 8.0, winner_rect.position.y + 15.0), "PRIORITY TARGET: %s" % target_agent.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, winner_rect.size.x - 12.0, 11, chosen_color)
+	# -- FIX #5: Dashed arrow from winning target card → col2 header (left edge)
+	# Shows HOW the target choice feeds into the behaviour scoring step.
+	var winning_target_card: Rect2 = red_card if red_chosen else blue_card
+	var winning_target_color: Color = C_RED_AG if red_chosen else Color(0.20, 0.90, 1.0)
 
-	draw_string(font, right_rect.position + Vector2(10.0, 18.0), "Active Fuzzy Rules", HORIZONTAL_ALIGNMENT_LEFT, right_rect.size.x - 20.0, 13, C_DIM)
-	var rule_y: float = right_rect.position.y + 28.0
-	for i in range(mini(6, rules.size())):
-		var rule: Dictionary = Dictionary(rules[i])
-		var label: String = str(rule.get("label", "rule"))
-		var strength: float = clampf(float(rule.get("strength", 0.0)), 0.0, 1.0)
-		var support: Dictionary = _infer_rule_support(label, behavior, target_agent)
-		var support_target: String = str(support.get("target", "NEUTRAL"))
-		var support_behavior: String = str(support.get("behavior", behavior))
-		var support_color: Color = _behavior_color(support_behavior)
-		var rule_rect: Rect2 = Rect2(right_rect.position.x + 10.0, rule_y, right_rect.size.x - 20.0, 42.0)
-		draw_rect(rule_rect, Color(0.03, 0.06, 0.10, 0.94 * alpha))
-		draw_rect(rule_rect, Color(support_color.r, support_color.g, support_color.b, 0.34 * alpha), false)
-		draw_string(font, Vector2(rule_rect.position.x + 8.0, rule_rect.position.y + 14.0), label, HORIZONTAL_ALIGNMENT_LEFT, rule_rect.size.x - 18.0, 10, C_TEXT)
-		draw_string(font, Vector2(rule_rect.position.x + 8.0, rule_rect.position.y + 31.0), "%s • %s" % [support_target, support_behavior], HORIZONTAL_ALIGNMENT_LEFT, rule_rect.size.x - 90.0, 9, C_DIM)
-		var bar_rect: Rect2 = Rect2(rule_rect.end.x - 82.0, rule_rect.position.y + 26.0, 72.0, 8.0)
+	# -- Column 2: Behaviour Evaluation ---
+	var col2_x: float = rect.position.x + 8.0 + col_w
+	var col2_header: Rect2 = Rect2(col2_x, tree_area_y, col_w - 8.0, 28.0)
+	draw_rect(col2_header, Color(0.04, 0.08, 0.14, 0.92 * alpha))
+	draw_rect(col2_header, Color(C_POLICE.r, C_POLICE.g, C_POLICE.b, 0.40 * alpha), false)
+	draw_string(font, col2_header.position + Vector2(8.0, 18.0), "Behaviour Evaluation", HORIZONTAL_ALIGNMENT_LEFT, col2_header.size.x - 12.0, 12, C_POLICE)
+	_draw_tree_link(root_rect.get_center(), Vector2(col2_header.get_center().x, col2_header.position.y), C_POLICE, 2.5, alpha)
+
+	var behaviour_names: Array = ["chase", "intercept", "investigate", "patrol"]
+	var score_keys: Array = ["chase_score", "intercept_score", "investigate_score", "patrol_score"]
+	var beh_item_h: float = (tree_area_h - 34.0) / 4.0 - 4.0
+	for bi in range(4):
+		var bname: String = behaviour_names[bi]
+		var bscore: float = float(inputs.get(score_keys[bi], 0.0))
+		var is_winner: bool = bname == behavior.to_lower()
+		var bcol: Color = _behavior_color(bname.to_upper())
+		var bnode_rect: Rect2 = Rect2(col2_x, col2_header.end.y + 6.0 + float(bi) * (beh_item_h + 4.0), col_w - 8.0, beh_item_h)
+		draw_rect(bnode_rect, Color(0.03, 0.06, 0.10, 0.95 * alpha))
+		draw_rect(bnode_rect, Color(bcol.r, bcol.g, bcol.b, (0.78 if is_winner else 0.30) * alpha), false, 2.0)
+		if is_winner:
+			draw_rect(Rect2(bnode_rect.position, Vector2(bnode_rect.size.x, 3.0)), Color(bcol.r, bcol.g, bcol.b, 0.90 * alpha))
+		draw_string(font, bnode_rect.position + Vector2(8.0, 16.0), bname.to_upper(), HORIZONTAL_ALIGNMENT_LEFT, bnode_rect.size.x - 12.0, 12, Color(bcol.r, bcol.g, bcol.b, 0.98 * alpha))
+		var bar_rect: Rect2 = Rect2(bnode_rect.position.x + 8.0, bnode_rect.position.y + 22.0, bnode_rect.size.x - 16.0, 8.0)
 		draw_rect(bar_rect, Color(0.08, 0.12, 0.16, 0.95))
-		draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * strength, bar_rect.size.y)), Color(support_color.r, support_color.g, support_color.b, 0.92))
-		rule_y += 48.0
-		if rule_y > right_rect.end.y - 92.0:
-			break
+		draw_rect(Rect2(bar_rect.position, Vector2(bar_rect.size.x * clampf(bscore, 0.0, 1.0), bar_rect.size.y)), Color(bcol.r, bcol.g, bcol.b, 0.92))
+		draw_string(font, bnode_rect.position + Vector2(8.0, bnode_rect.size.y - 4.0), "Score %.2f%s" % [bscore, " ← WINNER" if is_winner else ""], HORIZONTAL_ALIGNMENT_LEFT, bnode_rect.size.x - 12.0, 9, C_TEXT)
 
-	var explanation_rect: Rect2 = Rect2(right_rect.position.x + 10.0, right_rect.end.y - 64.0, right_rect.size.x - 20.0, 54.0)
-	draw_rect(explanation_rect, Color(0.04, 0.08, 0.12, 0.92 * alpha))
-	draw_rect(explanation_rect, Color(behavior_color.r, behavior_color.g, behavior_color.b, 0.36 * alpha), false)
-	draw_string(font, explanation_rect.position + Vector2(8.0, 16.0), "Why this decision", HORIZONTAL_ALIGNMENT_LEFT, explanation_rect.size.x - 14.0, 11, C_DIM)
-	draw_string(font, explanation_rect.position + Vector2(8.0, 37.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, explanation_rect.size.x - 14.0, 11, C_TEXT)
+	# -- Column 3: Final Decision ---
+	var col3_x: float = rect.position.x + 8.0 + col_w * 2.0
+	var col3_header: Rect2 = Rect2(col3_x, tree_area_y, col_w - 8.0, 28.0)
+	draw_rect(col3_header, Color(0.04, 0.08, 0.14, 0.92 * alpha))
+	draw_rect(col3_header, Color(behavior_color.r, behavior_color.g, behavior_color.b, 0.50 * alpha), false)
+	draw_string(font, col3_header.position + Vector2(8.0, 18.0), "Final Decision", HORIZONTAL_ALIGNMENT_LEFT, col3_header.size.x - 12.0, 12, behavior_color)
+	_draw_tree_link(root_rect.get_center(), Vector2(col3_header.get_center().x, col3_header.position.y), behavior_color, 2.0, alpha)
+
+	var chosen_tile_str: String = _tile_str(Vector2i(decision.get("chosen_tile", Vector2i(-1, -1))))
+	var final_rect: Rect2 = Rect2(col3_x, col3_header.end.y + 6.0, col_w - 8.0, 72.0)
+	_draw_tree_node(final_rect, behavior.to_upper(), "Move to %s" % chosen_tile_str, behavior_color, font, alpha, true)
+
+	var reason_rect: Rect2 = Rect2(col3_x, final_rect.end.y + 6.0, col_w - 8.0, 60.0)
+	draw_rect(reason_rect, Color(0.02, 0.04, 0.06, 0.92 * alpha))
+	draw_rect(reason_rect, Color(behavior_color.r, behavior_color.g, behavior_color.b, 0.28 * alpha), false)
+	draw_string(font, reason_rect.position + Vector2(8.0, 14.0), "Why this decision", HORIZONTAL_ALIGNMENT_LEFT, reason_rect.size.x - 12.0, 10, C_DIM)
+	draw_string(font, reason_rect.position + Vector2(8.0, 30.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, reason_rect.size.x - 12.0, 10, C_TEXT)
+
+	var target_display: String = target_agent if target_agent != "Unknown" else "—"
+	draw_string(font, reason_rect.position + Vector2(8.0, 52.0), "Target: %s" % target_display, HORIZONTAL_ALIGNMENT_LEFT, reason_rect.size.x - 12.0, 10, chosen_color)
+
+	# -- FIX #5: Draw linking arrows between columns so examiner can trace decision path --
+	# Dashed arrow: winning target card right edge → col2 header left edge
+	# Shows: "chosen target score feeds into behaviour evaluation"
+	var target_card_right: Vector2 = Vector2(winning_target_card.end.x, winning_target_card.get_center().y)
+	var col2_left: Vector2 = Vector2(col2_header.position.x, col2_header.get_center().y)
+	_draw_dashed_line(target_card_right, col2_left, Color(winning_target_color.r, winning_target_color.g, winning_target_color.b, 0.70 * alpha), 1.5, 5.0)
+
+	# Solid arrow: winning behaviour node right edge → col3 header left edge
+	# Shows: "winning behaviour → final decision"
+	var winner_bi: int = behaviour_names.find(behavior.to_lower())
+	if winner_bi < 0:
+		winner_bi = 0
+	var winner_bnode_y: float = col2_header.end.y + 6.0 + float(winner_bi) * (beh_item_h + 4.0)
+	var winner_bnode_rect: Rect2 = Rect2(col2_x, winner_bnode_y, col_w - 8.0, beh_item_h)
+	var winner_behavior_right: Vector2 = Vector2(winner_bnode_rect.end.x, winner_bnode_rect.get_center().y)
+	var col3_left: Vector2 = Vector2(final_rect.position.x, final_rect.get_center().y)
+	_draw_tree_link(winner_behavior_right, col3_left, behavior_color, 2.0, alpha)
 
 func _draw_fuzzy_target_card(rect: Rect2, label: String, accent: Color, threat_score: float, dist_police: int, dist_exit: int, stealth: int, chosen: bool, font: Font, alpha: float) -> void:
 	draw_rect(rect, Color(0.03, 0.06, 0.10, 0.94 * alpha))
@@ -1372,42 +1581,102 @@ func _draw_bar_with_label(pos: Vector2, width: float, label: String, value01: fl
 func _draw_decision_timeline(rect: Rect2, timeline: Array, font: Font, alpha: float) -> void:
 	if font == null:
 		return
-	draw_string(font, rect.position + Vector2(10.0, 16.0), "Decision Timeline", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 14, C_HIGHLIGHT)
+
+	var header_h: float = 26.0
+	draw_string(font, rect.position + Vector2(10.0, 16.0), "Decision Timeline",
+		HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 14, C_HIGHLIGHT)
+
 	if timeline.is_empty():
-		draw_string(font, rect.position + Vector2(10.0, 36.0), "No decisions recorded", HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 11, C_DIM)
+		draw_string(font, rect.position + Vector2(10.0, 38.0), "No decisions recorded",
+			HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 11, C_DIM)
 		return
-	var start_idx: int = maxi(0, timeline.size() - 8)
-	var y: float = rect.position.y + 36.0
-	for i in range(timeline.size() - 1, start_idx - 1, -1):
-		var item: Dictionary = Dictionary(timeline[i])
+
+	var card_h:    float = 64.0
+	var card_gap:  float = 8.0
+	var sb_w:      float = 6.0
+	var content_top: float = rect.position.y + header_h + 10.0
+	var content_h:   float = rect.size.y - header_h - 10.0
+	var total:       int   = timeline.size()
+	var visible_count: int = maxi(1, int(content_h / (card_h + card_gap)))
+	var max_scroll:  int   = maxi(0, total - visible_count)
+	_timeline_scroll = clampi(_timeline_scroll, 0, max_scroll)
+
+	# Count / scroll hint
+	var showing_end: int = mini(_timeline_scroll + visible_count, total)
+	var showing_start: int = _timeline_scroll + 1
+	var has_scroll: bool = total > visible_count
+	if has_scroll:
+		var hint: String = "%d–%d of %d  ·  scroll wheel" % [showing_start, showing_end, total]
+		draw_string(font, rect.position + Vector2(10.0, 24.0), hint,
+			HORIZONTAL_ALIGNMENT_LEFT, rect.size.x - 20.0, 9, C_DIM)
+
+	var card_w: float = rect.size.x - 16.0 - (sb_w + 6.0 if has_scroll else 0.0)
+	var y: float = content_top
+
+	for slot in range(visible_count):
+		# slot 0 = newest visible item (top of list = highest tick)
+		var arr_idx: int = total - 1 - _timeline_scroll - slot
+		if arr_idx < 0:
+			break
+		if y + card_h > rect.end.y + 2.0:
+			break
+
+		var item: Dictionary = Dictionary(timeline[arr_idx])
 		var tick: int = int(item.get("tick", -1))
 		var chosen_action: String = str(item.get("chosen_action", "MOVE"))
 		if item.has("chosen_behavior"):
 			chosen_action = "%s %s" % [str(item.get("chosen_behavior", "PATROL")), str(item.get("chosen_target", ""))]
 		var reason: String = str(item.get("reason", "Not recorded"))
-		var newest: bool = i == timeline.size() - 1
-		var card_h: float = 64.0
-		var card_rect: Rect2 = Rect2(rect.position.x + 8.0, y - 10.0, rect.size.x - 16.0, card_h)
+		var newest: bool = arr_idx == total - 1
+
+		var card_rect: Rect2 = Rect2(rect.position.x + 8.0, y, card_w, card_h)
 		var accent: Color = Color(0.20, 0.85, 1.0)
 		draw_rect(card_rect, Color(0.03, 0.06, 0.10, 0.94 * alpha))
 		draw_rect(card_rect, Color(accent.r, accent.g, accent.b, (0.46 if newest else 0.24) * alpha), false)
-		draw_rect(Rect2(card_rect.position.x, card_rect.position.y, 4.0, card_rect.size.y), Color(accent.r, accent.g, accent.b, (0.88 if newest else 0.62) * alpha))
+		draw_rect(Rect2(card_rect.position.x, card_rect.position.y, 4.0, card_rect.size.y),
+			Color(accent.r, accent.g, accent.b, (0.88 if newest else 0.62) * alpha))
+
 		var algorithm_label: String = str(item.get("algorithm", "AI"))
-		draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 16.0), "T%d  %s" % [tick, chosen_action], HORIZONTAL_ALIGNMENT_LEFT, card_rect.size.x - 100.0, 12, C_TEXT)
-		draw_string(font, Vector2(card_rect.end.x - 84.0, card_rect.position.y + 16.0), algorithm_label, HORIZONTAL_ALIGNMENT_LEFT, 78.0, 10, C_DIM)
-		draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 34.0), reason if reason != "" else "reason not recorded", HORIZONTAL_ALIGNMENT_LEFT, card_rect.size.x - 16.0, 10, C_DIM)
+		draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 16.0),
+			"T%d  %s" % [tick, chosen_action],
+			HORIZONTAL_ALIGNMENT_LEFT, card_w - 90.0, 12, C_TEXT)
+		draw_string(font, Vector2(card_rect.end.x - 84.0, card_rect.position.y + 16.0),
+			algorithm_label, HORIZONTAL_ALIGNMENT_LEFT, 78.0, 10, C_DIM)
+		draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 34.0),
+			reason if reason != "" else "reason not recorded",
+			HORIZONTAL_ALIGNMENT_LEFT, card_w - 16.0, 10, C_DIM)
+
 		var metric_line: String = ""
 		if item.has("chosen_score"):
 			metric_line = "Score %.2f" % float(item.get("chosen_score", 0.0))
+			var pruned:    int = int(item.get("pruned_branches", -1))
+			var evaluated: int = int(item.get("evaluated_nodes", 0))
+			var depth:     int = int(item.get("search_depth", 0))
+			if pruned >= 0:
+				metric_line += "  ·  pruned %d  depth %d" % [pruned, depth]
+				if evaluated > 0:
+					metric_line += " (%d nodes)" % evaluated
 		elif item.has("chosen_visits"):
 			metric_line = "Visits %d" % int(item.get("chosen_visits", 0))
 		elif item.has("chosen_behavior"):
-			metric_line = "Behavior %s  |  Target %s" % [str(item.get("chosen_behavior", "-")), str(item.get("chosen_target", "-"))]
+			metric_line = "%s → %s" % [str(item.get("chosen_behavior", "-")), str(item.get("chosen_target", "-"))]
 		if metric_line != "":
-			draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 54.0), metric_line, HORIZONTAL_ALIGNMENT_LEFT, card_rect.size.x - 16.0, 10, C_TEXT)
-		y += card_h + 8.0
-		if y > rect.end.y - 8.0:
-			break
+			draw_string(font, Vector2(card_rect.position.x + 10.0, card_rect.position.y + 54.0),
+				metric_line, HORIZONTAL_ALIGNMENT_LEFT, card_w - 16.0, 10, C_TEXT)
+
+		y += card_h + card_gap
+
+	# Scrollbar track + thumb
+	if has_scroll:
+		var sb_x: float    = rect.end.x - sb_w - 4.0
+		var track_h: float = content_h - card_gap
+		var track: Rect2   = Rect2(sb_x, content_top, sb_w, track_h)
+		draw_rect(track, Color(0.08, 0.12, 0.18, 0.80 * alpha))
+		var thumb_h: float  = maxf(18.0, track_h * float(visible_count) / float(total))
+		var travel:  float  = track_h - thumb_h
+		var thumb_y: float  = content_top + travel * (float(_timeline_scroll) / float(max_scroll))
+		draw_rect(Rect2(sb_x, thumb_y, sb_w, thumb_h), Color(0.22, 0.86, 1.0, 0.78 * alpha))
+		draw_rect(Rect2(sb_x, thumb_y, sb_w, thumb_h), Color(0.50, 0.96, 1.0, 0.40 * alpha), false)
 
 func _draw_arrow(from_pos: Vector2, to_pos: Vector2, color: Color, size: float) -> void:
 	var dir: Vector2 = (to_pos - from_pos)

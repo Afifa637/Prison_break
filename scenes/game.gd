@@ -167,6 +167,9 @@ func _process(delta: float) -> void:
 	else:
 		_shake_time = 0.0
 		_camera.position = _camera_base_pos
+	# FIX #4: Keep the countdown timer in the decision overlay up to date.
+	if _decision_overlay != null and _sim != null:
+		_decision_overlay.time_remaining_seconds = _sim.get_time_remaining_seconds()
 
 func _unhandled_key_input(event: InputEvent) -> void:
 	if not event is InputEventKey or not event.pressed or event.echo:

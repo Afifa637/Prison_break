@@ -36,6 +36,40 @@ class_name FuzzyConfig
 @export var alert_chase_weight:     float = 0.80
 @export var alert_chase_base_bias:  float = 0.40
 
+# ── Exit-threat fuzzy membership thresholds ───────────────────────────────────
+# Escape urgency is normalized to 0..10, where 0 means no immediate exit threat
+# and 10 means the prisoner is at/very near the active exit. These values match
+# Fig 8 in the report: Low, Medium, and High exit-threat memberships.
+@export var exit_low_full: float = 2.0
+@export var exit_low_zero: float = 4.5
+@export var exit_medium_low: float = 3.0
+@export var exit_medium_peak: float = 5.0
+@export var exit_medium_high: float = 7.5
+@export var exit_high_zero: float = 6.0
+@export var exit_high_full: float = 8.0
+
+# ── CCTV-confidence fuzzy membership thresholds ───────────────────────────────
+# CCTV confidence is normalized to 0..1. These values match Fig 9 in the report:
+# Weak, Medium, and Strong CCTV-confidence memberships.
+@export var cctv_weak_full: float = 0.25
+@export var cctv_weak_zero: float = 0.50
+@export var cctv_medium_low: float = 0.25
+@export var cctv_medium_peak: float = 0.50
+@export var cctv_medium_high: float = 0.75
+@export var cctv_strong_zero: float = 0.55
+@export var cctv_strong_full: float = 0.75
+
+# ── Weights for exit-threat and CCTV fuzzy rules ──────────────────────────────
+@export var w_exit_low_patrol: float = 0.35
+@export var w_exit_medium_investigate: float = 0.45
+@export var w_exit_medium_intercept: float = 0.55
+@export var w_exit_high_intercept: float = 1.35
+@export var w_cctv_weak_investigate: float = 0.25
+@export var w_cctv_medium_investigate: float = 0.80
+@export var w_cctv_strong_chase: float = 0.45
+@export var w_cctv_strong_intercept: float = 0.90
+
+
 # ── Legacy visibility / noise / threat fields (kept for compatibility) ─────────
 @export var vis_low: float    = 0.2
 @export var vis_medium: float = 0.5

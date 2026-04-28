@@ -55,6 +55,25 @@ func _far_full()           -> float: return _config.dist_far
 func _alert_suspicious()   -> float: return _config.alert_suspicious
 func _alert_alarmed()      -> float: return _config.alert_alarmed
 
+# Exit-threat membership constants. Escape urgency is 0..10:
+# 0 = prisoner is not close to escaping, 10 = prisoner is at/near active exit.
+func _exit_low_full()      -> float: return _config.exit_low_full
+func _exit_low_zero()      -> float: return _config.exit_low_zero
+func _exit_medium_low()    -> float: return _config.exit_medium_low
+func _exit_medium_peak()   -> float: return _config.exit_medium_peak
+func _exit_medium_high()   -> float: return _config.exit_medium_high
+func _exit_high_zero()     -> float: return _config.exit_high_zero
+func _exit_high_full()     -> float: return _config.exit_high_full
+
+# CCTV-confidence membership constants. CCTV confidence is 0..1.
+func _cctv_weak_full()     -> float: return _config.cctv_weak_full
+func _cctv_weak_zero()     -> float: return _config.cctv_weak_zero
+func _cctv_medium_low()    -> float: return _config.cctv_medium_low
+func _cctv_medium_peak()   -> float: return _config.cctv_medium_peak
+func _cctv_medium_high()   -> float: return _config.cctv_medium_high
+func _cctv_strong_zero()   -> float: return _config.cctv_strong_zero
+func _cctv_strong_full()   -> float: return _config.cctv_strong_full
+
 func choose_action(agent: Node2D, grid: Node, cost_map: RefCounted, exit_rotator: Node, all_agents: Array) -> Action:
 	_decision_tick += 1
 	_grid = grid
@@ -287,7 +306,17 @@ func _target_priority(police: Node2D, prisoner: Agent, active_exit: Vector2i) ->
 		noise_conf = clampf(float(n - dist_police) / maxf(1.0, float(n)), 0.0, 1.0)
 	var visibility_conf: float = maxf(visible_conf, noise_conf * 0.75)
 
+	# CCTV is now a real fuzzy input. The raw confidence is fuzzified into
+	# Weak / Medium / Strong and then used in target priority.
 	var cctv_conf: float = _cctv_confidence_for(prisoner, police)
+	var cctv_weak_mu: float = 0.0
+	var cctv_medium_mu: float = 0.0
+	var cctv_strong_mu: float = 0.0
+	if cctv_conf > 0.0:
+		cctv_weak_mu = _trap_high(cctv_conf, _cctv_weak_full(), _cctv_weak_zero())
+		cctv_medium_mu = _trap_mid(cctv_conf, _cctv_medium_low(), _cctv_medium_peak(), _cctv_medium_high())
+		cctv_strong_mu = _trap_low(cctv_conf, _cctv_strong_zero(), _cctv_strong_full())
+	var cctv_priority: float = cctv_weak_mu * 0.25 + cctv_medium_mu * 1.05 + cctv_strong_mu * 1.90
 
 	var capture_opportunity: float = 0.0
 	if dist_police <= 1:
@@ -295,22 +324,29 @@ func _target_priority(police: Node2D, prisoner: Agent, active_exit: Vector2i) ->
 	elif dist_police == 2:
 		capture_opportunity = 1.8
 
-	var exit_threat: float = clampf((10.0 - float(mini(dist_exit, 10))) / 10.0, 0.0, 1.0) * 3.0
-	# Exit rotation timing: if the prisoner can't reach this exit before it rotates,
-	# halve exit_threat — they're not actually close to escaping via THIS exit.
-	# This makes the police correctly de-prioritize prisoners sprinting toward a
-	# soon-to-vanish exit and focus on the one heading for the NEXT active exit.
+	# Exit threat is now a real fuzzy input. Convert distance-to-exit into
+	# escape urgency from 0..10, then fuzzify it into Low / Medium / High.
+	var exit_urgency: float = clampf(10.0 - float(mini(dist_exit, 10)), 0.0, 10.0)
+
+	# If the prisoner cannot reach this active exit before it rotates, reduce
+	# urgency before fuzzification.
 	if _exit_rotator != null:
 		var ticks_left: int = _exit_rotator.ticks_until_next_rotation()
 		if ticks_left > 0 and dist_exit > ticks_left:
-			exit_threat *= 0.5  # prisoner can't reach this exit in time
+			exit_urgency *= 0.5
+
+	var exit_low_mu: float = _trap_high(exit_urgency, _exit_low_full(), _exit_low_zero())
+	var exit_medium_mu: float = _trap_mid(exit_urgency, _exit_medium_low(), _exit_medium_peak(), _exit_medium_high())
+	var exit_high_mu: float = _trap_low(exit_urgency, _exit_high_zero(), _exit_high_full())
+	var exit_threat: float = exit_low_mu * 0.25 + exit_medium_mu * 1.65 + exit_high_mu * 3.0
+
 	var low_stealth_bonus: float = (1.0 - stealth_norm) * 2.2
 	var police_distance_cost: float = float(dist_police) * 0.35
 	var target_switch_penalty: float = 0.0
 	if current_target_id >= 0 and prisoner.agent_id != current_target_id:
 		target_switch_penalty = 1.1 + float(maxi(0, target_lock_ticks)) * 0.25
 
-	return capture_opportunity + exit_threat + visibility_conf * 2.0 + cctv_conf * 1.7 + low_stealth_bonus - police_distance_cost - target_switch_penalty
+	return capture_opportunity + exit_threat + visibility_conf * 2.0 + cctv_priority + low_stealth_bonus - police_distance_cost - target_switch_penalty
 
 func _cctv_confidence_for(prisoner: Agent, police: Node2D) -> float:
 	var hint_conf: float = float(_cctv_hint.get("confidence", 0.0))
@@ -371,28 +407,62 @@ func _choose_behaviour(police: Node2D, target: Agent, active_exit: Vector2i) -> 
 	var alert_level: float = clampf(float(police.metrics.get("alert_level", 0.0)), 0.0, 1.0)
 	var dist_v: float = float(d)
 
-	# Membership functions — all thresholds from _config (Critical #1 fix)
-	var near_mu: float      = _trap_high(dist_v, _near_full(), _near_zero())
-	var medium_mu: float    = _trap_mid(dist_v, _medium_low(), _medium_peak(), _medium_high())
-	var far_mu: float       = _trap_low(dist_v, _far_zero(), _far_full())
+	# Distance and alert fuzzy inputs.
+	var near_mu: float       = _trap_high(dist_v, _near_full(), _near_zero())
+	var medium_mu: float     = _trap_mid(dist_v, _medium_low(), _medium_peak(), _medium_high())
+	var far_mu: float        = _trap_low(dist_v, _far_zero(), _far_full())
 	var suspicious_mu: float = _trap_mid(alert_level, 0.20, _alert_suspicious(), 0.75)
 	var alarmed_mu: float    = _trap_low(alert_level, _alert_alarmed(), 0.90)
 
-	# Chase score: alert level adds a smooth weight instead of an early-return
+	# Exit threat fuzzy input, matching Fig 8.
+	# Distance to exit -> escape urgency scale 0..10.
+	var exit_urgency: float = clampf(10.0 - float(mini(target_exit_d, 10)), 0.0, 10.0)
+	if _exit_rotator != null:
+		var ticks_left: int = _exit_rotator.ticks_until_next_rotation()
+		if ticks_left > 0 and target_exit_d > ticks_left:
+			exit_urgency *= 0.5
+	var exit_low_mu: float = _trap_high(exit_urgency, _exit_low_full(), _exit_low_zero())
+	var exit_medium_mu: float = _trap_mid(exit_urgency, _exit_medium_low(), _exit_medium_peak(), _exit_medium_high())
+	var exit_high_mu: float = _trap_low(exit_urgency, _exit_high_zero(), _exit_high_full())
+
+	# CCTV confidence fuzzy input, matching Fig 9.
+	var cctv_conf: float = _cctv_confidence_for(target, police)
+	var cctv_weak_mu: float = 0.0
+	var cctv_medium_mu: float = 0.0
+	var cctv_strong_mu: float = 0.0
+	if cctv_conf > 0.0:
+		cctv_weak_mu = _trap_high(cctv_conf, _cctv_weak_full(), _cctv_weak_zero())
+		cctv_medium_mu = _trap_mid(cctv_conf, _cctv_medium_low(), _cctv_medium_peak(), _cctv_medium_high())
+		cctv_strong_mu = _trap_low(cctv_conf, _cctv_strong_zero(), _cctv_strong_full())
+
+	# Rule base / behaviour scores.
+	# Multiple rules can activate at the same time; winner-takes-all chooses output.
 	var chase_score: float = \
 		near_mu * _config.w_chase + \
 		medium_mu * alarmed_mu + \
 		alert_level * _config.alert_chase_weight + \
-		_config.alert_chase_base_bias * alert_level
+		_config.alert_chase_base_bias * alert_level + \
+		cctv_strong_mu * _config.w_cctv_strong_chase
 
-	var investigate_score: float = medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + far_mu * suspicious_mu * 0.65
+	var investigate_score: float = \
+		medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + \
+		far_mu * suspicious_mu * 0.65 + \
+		exit_medium_mu * _config.w_exit_medium_investigate + \
+		cctv_weak_mu * _config.w_cctv_weak_investigate + \
+		cctv_medium_mu * _config.w_cctv_medium_investigate
 
-	# Bug 2 fix: add exit-proximity urgency so intercept beats patrol even at low alert
-	var target_exit_urgency: float = clampf((8.0 - float(target_exit_d)) / 8.0, 0.0, 1.0)
-	var intercept_score: float   = far_mu * maxf(alarmed_mu, 0.35 + target_exit_urgency * 0.80) + (0.90 if target_exit_d <= 6 else 0.0)
-	var patrol_score: float      = far_mu * maxf(0.0, 1.0 - alert_level) + 0.10
+	var intercept_score: float = \
+		far_mu * maxf(alarmed_mu, 0.35) + \
+		exit_medium_mu * _config.w_exit_medium_intercept + \
+		exit_high_mu * _config.w_exit_high_intercept + \
+		cctv_strong_mu * _config.w_cctv_strong_intercept
 
-	# Bug 1 fix: bridge bonus keeps CHASE dominant in the d=4-5 transition zone
+	var patrol_score: float = \
+		far_mu * maxf(0.0, 1.0 - alert_level) + \
+		exit_low_mu * _config.w_exit_low_patrol + \
+		0.10
+
+	# Extra tactical bonuses remain as crisp helper rules.
 	if d > 3 and d <= 5:
 		chase_score += 0.45
 	if target_exit_d <= 4:
@@ -400,12 +470,12 @@ func _choose_behaviour(police: Node2D, target: Agent, active_exit: Vector2i) -> 
 	if d <= 2:
 		chase_score += 0.75
 
-	# Recent sighting: nudge investigate without bypassing fuzzy scoring
+	# Recent sighting nudges investigation.
 	var seen_tick: int = int(last_seen_tick_by_agent.get(target.agent_id, -99999))
 	if _decision_tick - seen_tick <= 3:
 		investigate_score += 0.25
 
-	# Standard defuzzification — winner-takes-all
+	# Winner-takes-all defuzzification.
 	if chase_score >= intercept_score and chase_score >= investigate_score and chase_score >= patrol_score:
 		return "chase"
 	if intercept_score >= investigate_score and intercept_score >= patrol_score:
@@ -623,10 +693,26 @@ func _emit_decision_debug(agent: Node2D, behaviour: String, target_id: int, reas
 			var far_mu: float       = _trap_low(dist_v, _far_zero(), _far_full())
 			var suspicious_mu: float = _trap_mid(alert_level, 0.20, _alert_suspicious(), 0.75)
 			var alarmed_mu: float    = _trap_low(alert_level, _alert_alarmed(), 0.90)
-			chase_score      = near_mu * _config.w_chase + medium_mu * alarmed_mu + alert_level * _config.alert_chase_weight + _config.alert_chase_base_bias * alert_level
-			investigate_score = medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + far_mu * suspicious_mu * 0.65
-			intercept_score   = far_mu * maxf(alarmed_mu, 0.35) + (0.90 if target_exit_d <= 6 else 0.0)
-			patrol_score      = far_mu * maxf(0.0, 1.0 - alert_level) + 0.10
+			var exit_urgency: float = clampf(10.0 - float(mini(target_exit_d, 10)), 0.0, 10.0)
+			if _exit_rotator != null:
+				var ticks_left: int = _exit_rotator.ticks_until_next_rotation()
+				if ticks_left > 0 and target_exit_d > ticks_left:
+					exit_urgency *= 0.5
+			var exit_low_mu: float = _trap_high(exit_urgency, _exit_low_full(), _exit_low_zero())
+			var exit_medium_mu: float = _trap_mid(exit_urgency, _exit_medium_low(), _exit_medium_peak(), _exit_medium_high())
+			var exit_high_mu: float = _trap_low(exit_urgency, _exit_high_zero(), _exit_high_full())
+			var cctv_conf: float = _cctv_confidence_for(p, agent)
+			var cctv_weak_mu: float = 0.0
+			var cctv_medium_mu: float = 0.0
+			var cctv_strong_mu: float = 0.0
+			if cctv_conf > 0.0:
+				cctv_weak_mu = _trap_high(cctv_conf, _cctv_weak_full(), _cctv_weak_zero())
+				cctv_medium_mu = _trap_mid(cctv_conf, _cctv_medium_low(), _cctv_medium_peak(), _cctv_medium_high())
+				cctv_strong_mu = _trap_low(cctv_conf, _cctv_strong_zero(), _cctv_strong_full())
+			chase_score      = near_mu * _config.w_chase + medium_mu * alarmed_mu + alert_level * _config.alert_chase_weight + _config.alert_chase_base_bias * alert_level + cctv_strong_mu * _config.w_cctv_strong_chase
+			investigate_score = medium_mu * maxf(suspicious_mu, alarmed_mu * 0.60) + far_mu * suspicious_mu * 0.65 + exit_medium_mu * _config.w_exit_medium_investigate + cctv_weak_mu * _config.w_cctv_weak_investigate + cctv_medium_mu * _config.w_cctv_medium_investigate
+			intercept_score   = far_mu * maxf(alarmed_mu, 0.35) + exit_medium_mu * _config.w_exit_medium_intercept + exit_high_mu * _config.w_exit_high_intercept + cctv_strong_mu * _config.w_cctv_strong_intercept
+			patrol_score      = far_mu * maxf(0.0, 1.0 - alert_level) + exit_low_mu * _config.w_exit_low_patrol + 0.10
 			if target_exit_d <= 4:
 				intercept_score += 0.55
 			if d <= 2:
